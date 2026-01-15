@@ -1,4 +1,4 @@
-name: 
+name: microscopy_env
 channels:
   - conda-forge
 dependencies:
@@ -302,4 +302,3 @@ dependencies:
   - zstandard=0.23.0=py39h0802e32_3
   - zstd=1.5.7=h534d264_6
 
-prefix: "C:\\Users\\guilherme.bastosvent\\AppData\\Local\\miniforge3\\envs\\microscopy_env"
