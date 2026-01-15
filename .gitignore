@@ -1,0 +1,38 @@
+# --- Python Specific ---
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+ENV/
+build/
+dist/
+*.egg-info/
+
+# --- Jupyter Notebooks ---
+.ipynb_checkpoints
+*/.ipynb_checkpoints/*
+# Prevents tracking of large notebook autosave files
+.virtual_documents/
+
+# --- Fiji / ImageJ ---
+# Ignore Fiji/ImageJ specific update and temp files
+/Fiji.app/
+/ImageJ/
+*.lck
+# If you run macros that generate temp log files
+*.ijm.log
+# Typical ImageJ temporary measurement files
+Statistics.csv
+
+# --- Custom Data Folder ---
+# This ignores the "data" folder specifically
+/data/
+# Use this if you want to ignore any folder named "non-trackable"
+**/non-trackable/
+
+# --- System & IDE ---
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
