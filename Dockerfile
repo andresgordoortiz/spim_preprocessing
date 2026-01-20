@@ -1,18 +1,19 @@
-# Use a lightweight base image with Conda pre-installed
+# Use a more specific, stable version of the base image
 FROM continuumio/miniconda3:latest
 
-# Set non-interactive mode to avoid hanging during installations
+# Set non-interactive to prevent prompts from hanging the build
 ENV DEBIAN_FRONTEND=noninteractive
 
-# Install system dependencies required for Fiji and GUI libraries (GL)
-RUN apt-get update && apt-get install -y \
+# Added --fix-missing and specific update logic
+RUN apt-get update --fix-missing && \
+    apt-get install -y --no-install-recommends \
     wget \
     unzip \
     openjdk-11-jdk \
     libgl1-mesa-glx \
     libglib2.0-0 \
+    && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
-
 # --- 1. Setup Python Environment (microscopy_env) ---
 WORKDIR /app
 COPY microscopy_env.yml .
