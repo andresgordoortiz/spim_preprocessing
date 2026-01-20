@@ -1,0 +1,78 @@
+Bootstrap: docker
+From: continuumio/miniconda3:latest
+
+%files
+    microscopy_env.yml /opt/microscopy_env.yml
+
+%post
+    # Update system packages
+    apt-get update && apt-get install -y \
+        wget \
+        unzip \
+        libxrender1 \
+        libxtst6 \
+        libxi6 \
+        openjdk-11-jdk \
+        xvfb \
+        && rm -rf /var/lib/apt/lists/*
+
+    # Create conda environment from yml file
+    /opt/conda/bin/conda env create -f /opt/microscopy_env.yml
+
+    # Activate environment by default
+    echo ". /opt/conda/etc/profile.d/conda.sh" >> $SINGULARITY_ENVIRONMENT
+    echo "conda activate microscopy_env" >> $SINGULARITY_ENVIRONMENT
+
+    # Install Cellpose in the environment
+    /opt/conda/envs/microscopy_env/bin/pip install cellpose
+
+    # Download and install FIJI
+    cd /opt
+    wget https://downloads.imagej.net/fiji/latest/fiji-linux64.zip
+    unzip fiji-linux64.zip
+    rm fiji-linux64.zip
+
+    # Make FIJI executable
+    chmod +x /opt/Fiji.app/ImageJ-linux64
+
+    # Download and install TrackMate
+    cd /opt/Fiji.app
+    ./ImageJ-linux64 --headless --update add-update-site TrackMate https://sites.imagej.net/TrackMate/
+    ./ImageJ-linux64 --headless --update update
+
+    # Create a wrapper script for FIJI
+    cat > /usr/local/bin/fiji << 'EOF'
+#!/bin/bash
+export DISPLAY=:99
+Xvfb :99 -screen 0 1024x768x24 > /dev/null 2>&1 &
+XVFB_PID=$!
+/opt/Fiji.app/ImageJ-linux64 "$@"
+kill $XVFB_PID 2>/dev/null
+EOF
+    chmod +x /usr/local/bin/fiji
+
+%environment
+    export PATH=/opt/Fiji.app:$PATH
+    export JAVA_HOME=/usr/lib/jvm/java-11-openjdk-amd64
+    export LC_ALL=C.UTF-8
+    export LANG=C.UTF-8
+
+%runscript
+    exec "$@"
+
+%labels
+    Author YourName
+    Version v1.0
+    Description Container with Python microscopy environment, FIJI (headless), Cellpose, and TrackMate
+
+%help
+    This container includes:
+    - Python environment from microscopy_env.yml
+    - FIJI (headless mode with Xvfb)
+    - Cellpose for cell segmentation
+    - TrackMate for particle tracking
+
+    Usage:
+        singularity exec container.sif python your_script.py
+        singularity exec container.sif fiji --headless --console --run your_macro.ijm
+        singularity shell container.sif

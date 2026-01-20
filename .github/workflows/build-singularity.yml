@@ -1,0 +1,46 @@
+name: Build Singularity Container
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+    - name: Set up Singularity
+      uses: eWaterCycle/setup-singularity@v7
+      with:
+        singularity-version: 3.8.7
+
+    - name: Build Singularity container
+      run: |
+        sudo singularity build microscopy_container.sif microscopy.def
+
+    - name: Test container
+      run: |
+        singularity exec microscopy_container.sif python --version
+        singularity exec microscopy_container.sif fiji --help
+
+    - name: Upload container as artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: singularity-container
+        path: microscopy_container.sif
+        retention-days: 30
+
+    - name: Create Release (optional)
+      if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+      uses: softprops/action-gh-release@v1
+      with:
+        tag_name: v${{ github.run_number }}
+        files: microscopy_container.sif
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
