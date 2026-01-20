@@ -44,7 +44,8 @@ RUN ImageJ-linux64 --headless --update update
 
 # --- 3. Configuration ---
 # Create a directory for data
-mkdir /data
+RUN mkdir /data
+
 WORKDIR /data
 
 # Default command (can be overridden)
