@@ -1,7 +1,9 @@
-FROM continuumio/miniconda3:23.5.2-0
+FROM mambaorg/micromamba:1.5.1
+USER root
 
 ENV DEBIAN_FRONTEND=noninteractive
 
+# Install system dependencies
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
         wget \
@@ -16,18 +18,21 @@ RUN apt-get update && \
 WORKDIR /app
 COPY microscopy_env.yml .
 
-RUN conda env create -f microscopy_env.yml && conda clean -afy
+# Create environment with micromamba (much faster than conda)
+RUN micromamba create -f microscopy_env.yml -y && \
+    micromamba clean -afy
 
-ENV PATH /opt/conda/envs/microscopy_env/bin:$PATH
-
-RUN pip install --no-cache-dir cellpose
+# Activate environment and install cellpose
+RUN /bin/bash -c "eval \"\$(micromamba shell hook --shell bash)\" && \
+    micromamba activate microscopy_env && \
+    pip install --no-cache-dir cellpose"
 
 # --- 2. Setup FIJI and TrackMate ---
 RUN wget https://downloads.imagej.net/fiji/latest/fiji-linux64.zip && \
     unzip fiji-linux64.zip && \
     rm fiji-linux64.zip
 
-ENV PATH /app/Fiji.app:$PATH
+ENV PATH="/app/Fiji.app:$PATH"
 
 RUN ImageJ-linux64 --headless --update update
 
@@ -35,4 +40,6 @@ RUN ImageJ-linux64 --headless --update update
 RUN mkdir /data
 WORKDIR /data
 
+# Set up entrypoint to activate conda environment
+ENTRYPOINT ["/usr/local/bin/_entrypoint.sh"]
 CMD ["/bin/bash"]
