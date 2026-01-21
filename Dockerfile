@@ -3,13 +3,13 @@ USER root
 
 ENV DEBIAN_FRONTEND=noninteractive
 
-# Install system dependencies
+# Install system dependencies (use openjdk-17 for Debian Bookworm)
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
         wget \
         unzip \
         ca-certificates \
-        openjdk-11-jre-headless \
+        openjdk-17-jre-headless \
         libgl1 \
         libglib2.0-0 \
     && rm -rf /var/lib/apt/lists/*
