@@ -23,6 +23,17 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      # --- ADD THIS STEP TO FIX "NO SPACE LEFT" ---
+      - name: Free Disk Space (Ubuntu)
+        uses: jlumbroso/free-disk-space@v1.3.1
+        with:
+          tool-cache: true
+          android: true
+          dotnet: true
+          haskell: true
+          large-packages: true
+          swap-storage: true
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
