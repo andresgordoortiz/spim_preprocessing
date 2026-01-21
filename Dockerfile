@@ -28,13 +28,15 @@ RUN /bin/bash -c "eval \"\$(micromamba shell hook --shell bash)\" && \
     pip install --no-cache-dir cellpose"
 
 # --- 2. Setup FIJI and TrackMate ---
-RUN wget https://downloads.imagej.net/fiji/latest/fiji-linux64.zip && \
-    unzip fiji-linux64.zip && \
-    rm fiji-linux64.zip
+# Updated URL to new format
+RUN wget https://downloads.imagej.net/fiji/latest/fiji-latest-linux64-jdk.zip && \
+    unzip fiji-latest-linux64-jdk.zip && \
+    rm fiji-latest-linux64-jdk.zip
 
 ENV PATH="/app/Fiji.app:$PATH"
 
-RUN ImageJ-linux64 --headless --update update
+# Run Fiji update in headless mode
+RUN /app/Fiji.app/ImageJ-linux64 --headless --update update
 
 # --- 3. Configuration ---
 RUN mkdir /data
