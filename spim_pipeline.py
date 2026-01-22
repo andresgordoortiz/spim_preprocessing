@@ -1,0 +1,406 @@
+import argparse
+import psutil
+import time
+import os
+import sys
+import numpy as np
+import tifffile
+import scipy.ndimage as ndi
+from skimage.transform import rescale, resize
+import cv2
+import pims
+from WBNS import WBNS_image             # Asumimos que esto esta en el container
+import RedLionfishDeconv as rl          # GPU-accelerated Deconvolution
+from tqdm import tqdm
+from typing import Optional, Tuple
+
+# --- INICIO DE FUNCIONES ORIGINALES (LÓGICA INTACTA) ---
+
+def image_scaling_intens(img, min_val, max_val, print_res=False):
+    img_shape = img.shape
+    img_type = img.dtype
+    img_min = np.amin(img)
+    img_max = np.amax(img)
+
+    if img_shape[0] <  300:
+        img = np.reshape(img, newshape = -1)
+        img = cv2.normalize(img, None, alpha = min_val, beta = max_val, norm_type = cv2.NORM_MINMAX, dtype = cv2.CV_32F)
+        img = np.reshape(img, newshape = img_shape)
+    else:
+        scale = img_max - img_min
+        new_scale = max_val - min_val
+        img = (new_scale * (img.astype(np.float32) - img_min) / scale) + min_val
+
+    img = img.astype(img_type.name)
+
+    if print_res == True:
+        newimg_min = np.amin(img)
+        newimg_max = np.amax(img)
+        print('     -Intensity Norm  from (%d , %d) to  (%d, %d) ' % (img_min, img_max, newimg_min, newimg_max))
+
+    return img
+
+def read_tiff_voxel_size(file_path):
+    def _xy_voxel_size(tags, key):
+        assert key in ['XResolution', 'YResolution']
+        if key in tags:
+            num_pixels, units = tags[key].value
+            return units / num_pixels
+        return 1.
+
+    with tifffile.TiffFile(file_path) as tiff:
+        image_metadata = tiff.imagej_metadata
+        if image_metadata is not None:
+            z = image_metadata.get('spacing', 1.)
+        else:
+            z = 1.
+
+        tags = tiff.pages[0].tags
+        y = _xy_voxel_size(tags, 'YResolution')
+        x = _xy_voxel_size(tags, 'XResolution')
+
+        return [x, y, z]
+
+def read_nd2_voxel_size(image):
+    md = image.metadata
+    x = md["pixel_microns"]
+    y = md["pixel_microns"]
+    z = 3.0
+    return [x, y, z]
+
+def z_intensity_correction(stack: np.ndarray, z_axis: int = 0, method: str = "p95", smooth_window: int = 9, eps: float = 1e-8, preserve_dtype: bool = True):
+    if stack.ndim != 3:
+        raise ValueError(f"Expected 3D stack, got {stack.shape}")
+    x = np.moveaxis(stack, z_axis, 0).astype(np.float32, copy=False)
+    if method == "median":
+        levels = np.median(x.reshape(x.shape[0], -1), axis=1)
+    elif method.startswith("p"):
+        q = float(method[1:])
+        levels = np.percentile(x.reshape(x.shape[0], -1), q, axis=1)
+    else:
+        raise ValueError("method must be 'median' or 'pXX' like 'p95'")
+    levels = np.maximum(levels, eps)
+    if smooth_window is not None and smooth_window > 1:
+        if smooth_window % 2 == 0:
+            smooth_window += 1
+        pad = smooth_window // 2
+        lvl_pad = np.pad(levels, (pad, pad), mode="edge")
+        kernel = np.ones(smooth_window, dtype=np.float32) / smooth_window
+        levels_s = np.convolve(lvl_pad, kernel, mode="valid")
+    else:
+        levels_s = levels
+    target = np.median(levels_s)
+    scales = target / levels_s
+    y = x * scales[:, None, None]
+    y = np.moveaxis(y, 0, z_axis)
+    if not preserve_dtype:
+        return y.astype(np.float32, copy=False), scales
+    if np.issubdtype(stack.dtype, np.integer):
+        info = np.iinfo(stack.dtype)
+        y = np.clip(y, info.min, info.max).astype(stack.dtype)
+    else:
+        y = y.astype(stack.dtype, copy=False)
+    return y, scales
+
+def shading_correct_xy_estimated(stack: np.ndarray, sigma_xy: float = 64.0, z_axis: int = 0, per_slice: bool = False, eps: float = 1e-6, preserve_dtype: bool = True):
+    if stack.ndim != 3:
+        raise ValueError(f"Expected a 3D stack, got shape {stack.shape} (ndim={stack.ndim}).")
+    in_dtype = stack.dtype
+    x = np.moveaxis(stack.astype(np.float32, copy=False), z_axis, 0)
+    if per_slice:
+        corrected = np.empty_like(x, dtype=np.float32)
+        for i in range(x.shape[0]):
+            field_i = ndi.gaussian_filter(x[i], sigma=sigma_xy)
+            field_i = np.maximum(field_i, eps)
+            norm = float(np.mean(field_i))
+            corrected[i] = x[i] * (norm / field_i)
+        field = None
+    else:
+        proj = np.mean(x, axis=0)
+        field = ndi.gaussian_filter(proj, sigma=sigma_xy)
+        field = np.maximum(field, eps)
+        norm = float(np.mean(field))
+        corrected = x * (norm / field)
+    corrected = np.moveaxis(corrected, 0, z_axis)
+    if not preserve_dtype:
+        return corrected.astype(np.float32, copy=False), field
+    if np.issubdtype(in_dtype, np.integer):
+        info = np.iinfo(in_dtype)
+        corrected = np.clip(corrected, info.min, info.max).astype(in_dtype)
+    else:
+        corrected = corrected.astype(in_dtype, copy=False)
+    return corrected, field
+
+def clahe_3d_stack(stack: np.ndarray, clip_limit: float = 0.01, kernel_size: Optional[Tuple[int, int]] = None, axis: int = 0, preserve_dtype: bool = True, p_low: float = 0.5, p_high: float = 99.5, eps: float = 1e-8):
+    print("Applying clahe_3d_stack")
+    from skimage import exposure
+    if stack.ndim != 3:
+        raise ValueError(f"Expected a 3D stack, got shape {stack.shape}")
+    in_dtype = stack.dtype
+    s = np.moveaxis(stack, axis, 0).astype(np.float32, copy=False)
+    out = np.empty_like(s, dtype=np.float32)
+    for i in range(s.shape[0]):
+        img = s[i]
+        lo = np.percentile(img, p_low)
+        hi = np.percentile(img, p_high)
+        if hi <= lo + eps:
+            out[i] = 0.0
+            continue
+        img01 = np.clip(img, lo, hi)
+        img01 = (img01 - lo) / (hi - lo)
+        out[i] = exposure.equalize_adapthist(img01, kernel_size=kernel_size, clip_limit=clip_limit).astype(np.float32, copy=False)
+    out = np.moveaxis(out, 0, axis)
+    if not preserve_dtype:
+        return out
+    if np.issubdtype(in_dtype, np.integer):
+        info = np.iinfo(in_dtype)
+        out = np.clip(out * info.max, 0, info.max).astype(in_dtype)
+        return out
+    return out.astype(in_dtype, copy=False)
+
+def reslice(img, position, x_res, z_res):
+    scale=z_res/x_res
+    z,y,x=img.shape
+    new_z = round(z*scale)
+    img_max = np.amax(img).astype(np.float32)
+    img_normalized = img.astype(np.float32) / img_max
+    if position=='xz':
+        reslice_img=np.transpose(img_normalized,[1,0,2])
+        scale_img=np.zeros((y,new_z,x),dtype=np.float32)
+        for i in range(y):
+            scale_img[i] = resize(reslice_img[i], (new_z,x), order=3,anti_aliasing=True)
+    elif position=='yz':
+        reslice_img=np.transpose(img_normalized,[2,0,1])
+        scale_img = np.zeros((x,new_z,y), dtype=np.float32)
+        for i in range(x):
+            scale_img[i] = resize(reslice_img[i], (new_z,y), order=3,anti_aliasing=True)
+    elif position=='xy':
+        reslice_img=np.transpose(img_normalized,[1,0,2])
+        scale_img=np.zeros((y,new_z,x),dtype=np.float32)
+        for i in range(y):
+            scale_img[i] = resize(reslice_img[i], (new_z,x), order=3,anti_aliasing=True)
+        scale_img=np.transpose(scale_img,[1,0,2])
+    scale_img[scale_img < 0] = 0
+    scale_img[scale_img > 1] = 1
+    rescaled_img = (scale_img * img_max).astype(np.uint16)
+    return rescaled_img
+
+def image_postprocessing(img, resolution_px, resolution_pz, noise_lvl, sigma):
+    steps = []
+    if resolution_px > 0: steps.append("Remove Background/Noise")
+    if resolution_pz > 0: steps.append("Remove Background/Noise z")
+    if sigma > 0: steps.append("Gaussian Smoothing")
+    pbar = tqdm(total=len(steps), desc="Postprocessing Image", unit="step")
+    if resolution_px > 0:
+        img = WBNS_image(img, resolution_px, noise_lvl)
+        pbar.update(1)
+    if resolution_pz > 0:
+        img_xz = np.transpose(img,[1,0,2])
+        img_xz = WBNS_image(img_xz, resolution_pz, 0)
+        img = np.transpose(img_xz,[1,0,2])
+        pbar.update(1)
+    if sigma > 0:
+        img = ndi.gaussian_filter(img, sigma)
+        pbar.update(1)
+    pbar.close()
+    return img
+
+def getNormalizationThresholds(img, percentiles):
+    if np.ndim(img) > 1: img = img.flatten()
+    low_thres = np.percentile(img,percentiles[0])
+    high_thres = np.percentile(img,percentiles[1])
+    return low_thres, high_thres
+
+def remove_outliers_image(img, low_thres, high_thres, print_res=False):
+    if print_res == True:
+        img_min = np.amin(img)
+        img_max = np.amax(img)
+    img[img > high_thres] = high_thres
+    img = img - low_thres
+    img[img < 0] = 0
+    if print_res == True:
+        newimg_min = np.amin(img)
+        newimg_max = np.amax(img)
+        print('Cropping Intensity from (%d , %d) to  (%d, %d) ' % (img_min, img_max, newimg_min, newimg_max))
+    return img
+
+def print_resource_usage():
+    vm = psutil.virtual_memory()
+    print(f"    [Resource] CPU usage: {psutil.cpu_percent()}% | RAM used: {vm.used / (1024**3):.2f} GB / {vm.total / (1024**3):.2f} GB")
+    # Not using nvidia-smi subprocess here as it might conflict inside singularity, relying on Slurm/Container
+
+# --- FIN DE FUNCIONES ORIGINALES ---
+
+def main():
+    parser = argparse.ArgumentParser(description="SPIM Image Preprocessing Pipeline")
+
+    # Paths
+    parser.add_argument("--input_file", type=str, required=True, help="Path to input image")
+    parser.add_argument("--outdir", type=str, required=True, help="Output directory")
+    parser.add_argument("--psf_path", type=str, required=True, help="Path to PSF model")
+
+    # Image Parameters
+    parser.add_argument("--image_scaling", type=float, default=1.0, help="Image scaling factor")
+    parser.add_argument("--xy_pixel", type=float, default=0.0, help="Force XY pixel size (um). 0 to read from metadata")
+    parser.add_argument("--z_pixel", type=float, default=0.0, help="Force Z pixel size (um). 0 to read from metadata")
+
+    # Processing Flags
+    parser.add_argument("--no_clahe", action="store_true", help="Disable CLAHE")
+    parser.add_argument("--no_z_correction", action="store_true", help="Disable Z intensity correction")
+    parser.add_argument("--no_shading", action="store_true", help="Disable Shading correction")
+
+    # Deconvolution Params
+    parser.add_argument("--padding", type=int, default=32, help="Padding for deconvolution")
+    parser.add_argument("--niter", type=int, default=3, help="Iterations for 3D Deconvolution")
+    parser.add_argument("--niterz", type=int, default=3, help="Iterations for 2D XZ Deconvolution")
+
+    # Normalization Params
+    parser.add_argument("--min_v", type=float, default=0, help="Min value for normalization")
+    parser.add_argument("--max_v", type=float, default=65535, help="Max value for normalization")
+    parser.add_argument("--percentile_low", type=float, default=40, help="Low percentile for outlier removal")
+    parser.add_argument("--percentile_high", type=float, default=99.99, help="High percentile for outlier removal")
+
+    # Background / Post-processing
+    parser.add_argument("--resolution_px0", type=float, default=10, help="BG Subtraction resolution")
+    parser.add_argument("--resolution_pz0", type=float, default=10, help="BG Subtraction resolution Z")
+    parser.add_argument("--noise_lvl", type=float, default=2, help="Noise level")
+    parser.add_argument("--sigma", type=float, default=1.0, help="Gaussian smoothing sigma")
+
+    args = parser.parse_args()
+
+    # Mapping boolean flags (reversed logic for argparse convenience)
+    apply_clahe = not args.no_clahe
+    apply_z_intensity_correction = not args.no_z_correction
+    apply_shading_correct = not args.no_shading
+    percentiles_source = (args.percentile_low, args.percentile_high)
+
+    if not os.path.exists(args.outdir):
+        try:
+            os.makedirs(args.outdir)
+        except FileExistsError:
+            pass
+
+    if args.xy_pixel > 0:
+        tempScale = args.z_pixel / args.xy_pixel
+    else:
+        tempScale = 0
+
+    # PSF Loading
+    if args.niter > 0:
+        t0 = time.time()
+        print(f"Loading PSF from {args.psf_path}")
+        psf = tifffile.imread(args.psf_path)
+        if args.image_scaling > 0 and args.image_scaling != 1.0:
+            psf = rescale(psf, (args.image_scaling, args.image_scaling, args.image_scaling), order=3, preserve_range=True, anti_aliasing=True)
+        psf_f = psf.astype(np.float32)
+        psf = psf_f/psf_f.sum()
+        print(f"[Timer] PSF preparation took {time.time()-t0:.2f} seconds")
+
+    # Processing Single Image
+    image_path = args.input_file
+    image_name = os.path.basename(image_path)
+
+    print(f"\n[Processing] {image_name}")
+    print_resource_usage()
+
+    start_time_total = time.time()
+
+    # Load Image
+    ext = os.path.splitext(image_name)[1].lower()
+    if ext in ['.tif', '.tiff']:
+        img = tifffile.imread(image_path).astype(np.uint16)
+        voxel_size = read_tiff_voxel_size(image_path)
+    elif ext == '.nd2':
+        img = pims.open(image_path)
+        voxel_size = read_nd2_voxel_size(img)
+        img = np.array(img, dtype=np.uint16, copy=False)
+    else:
+        print(f"Unsupported format: {ext}")
+        sys.exit(1)
+
+    physical_pixel_sizeX, physical_pixel_sizeY, physical_pixel_sizeZ = voxel_size
+
+    if tempScale > 0:
+        physical_pixel_sizeX = args.xy_pixel
+        physical_pixel_sizeZ = args.z_pixel
+
+    if args.image_scaling > 0 and args.image_scaling != 1.0:
+        img = rescale(img, (1.0, args.image_scaling, args.image_scaling), order=3, preserve_range=True, anti_aliasing=True)
+        physical_pixel_sizeX /= args.image_scaling
+
+    scale = physical_pixel_sizeX / physical_pixel_sizeZ
+
+    # Pre-processing
+    if apply_shading_correct:
+        print("Running shading_correct_xy_estimated...")
+        img, field = shading_correct_xy_estimated(img, sigma_xy=96, z_axis=0, per_slice=False)
+
+    if apply_z_intensity_correction:
+        print("Running z_intensity_correction...")
+        img, scales = z_intensity_correction(img, z_axis=0, method="p95", smooth_window=11)
+
+    # Isotropic Reslicing
+    if abs(1.0-scale) > 1e-4:
+        print("Reslicing to isotropic...")
+        img = reslice(img, 'xy', physical_pixel_sizeX, physical_pixel_sizeZ)
+
+    img = img.astype(np.float32)
+    new_img_shape = img.shape
+    # Recalculate voxel size after reslicing logic (simplified from original)
+    if 'img_shape' not in locals(): img_shape = new_img_shape
+    new_physical_pixel_sizeZ = img_shape[0] * physical_pixel_sizeZ / new_img_shape[0]
+    physical_pixel_sizeZ = new_physical_pixel_sizeZ
+
+    resolution_px = int(args.resolution_px0 / new_physical_pixel_sizeZ)
+    resolution_pz = int(args.resolution_pz0 / new_physical_pixel_sizeZ)
+
+    # Deconvolution (GPU)
+    if args.niter > 0:
+        print("Running 3D deconvolution (GPU)...")
+        img = image_scaling_intens(img, args.min_v, args.max_v, True)
+        img = np.pad(img, args.padding, mode='reflect')
+        # RedLionfish GPU Call
+        res_gpu = rl.doRLDeconvolutionFromNpArrays(img, psf, niter=args.niter, resAsUint8=False)
+        img = res_gpu[args.padding:-args.padding, args.padding:-args.padding, args.padding:-args.padding]
+
+    if args.niterz > 0:
+        print("Running 2D (XZ) deconvolution (GPU)...")
+        img = image_scaling_intens(img, args.min_v, args.max_v, True)
+        img_xz = np.transpose(img, [1,0,2])
+        psf_xz = np.transpose(psf, [1,0,2])
+        img_xz = np.pad(img_xz, args.padding, mode='reflect')
+        res_gpu = rl.doRLDeconvolutionFromNpArrays(img_xz, psf_xz, niter=args.niter, resAsUint8=False)
+        img_xz = res_gpu[args.padding:-args.padding, args.padding:-args.padding, args.padding:-args.padding]
+        img = np.transpose(img_xz, [1,0,2])
+        psf = np.transpose(psf_xz, [1,0,2])
+
+    # Post-processing
+    print("Running post-processing...")
+    img = image_postprocessing(img, resolution_px, resolution_pz, args.noise_lvl, args.sigma)
+
+    if apply_clahe:
+        print("Applying CLAHE...")
+        img_xz = np.transpose(img, [1,0,2])
+        img_xz = clahe_3d_stack(img_xz, clip_limit=0.01, kernel_size=(64, 64), axis=0)
+        img = np.transpose(img_xz, [1,0,2])
+
+    # Normalization
+    if percentiles_source[0] > 0 or percentiles_source[1] < 100:
+        print("Normalization...")
+        low_thres, high_thres = getNormalizationThresholds(img, percentiles_source)
+        img = remove_outliers_image(img, low_thres, high_thres)
+
+    # Final Save
+    img = image_scaling_intens(img, args.min_v, args.max_v, True)
+    img = img.astype(np.uint16)
+
+    base_name = os.path.splitext(image_name)[0]
+    image_out_name = f"{base_name}_processed.tif"
+    img_out_path = os.path.join(args.outdir, image_out_name)
+    tifffile.imwrite(img_out_path, img)
+
+    print(f"[Done] Saved to {img_out_path}")
+    print(f"Elapsed Time: {time.time() - start_time_total:.4f} seconds")
+
+if __name__ == "__main__":
+    main()
