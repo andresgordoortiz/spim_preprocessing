@@ -20,13 +20,11 @@ COPY --chown=mambauser:mambauser microscopy_env.yml .
 RUN --mount=type=cache,target=/opt/conda/pkgs \
     micromamba create -f microscopy_env.yml -y
 
-# 4. Download and setup FIJI directly
-RUN wget --progress=dot:giga -O fiji-nojre.zip https://downloads.imagej.net/fiji/latest/fiji-nojre.zip && \
-    ls -lh fiji-nojre.zip && \
-    file fiji-nojre.zip && \
-    unzip fiji-nojre.zip -d /opt && \
-    ls -la /opt/ && \
-    rm fiji-nojre.zip && \
+# 4. Download and setup FIJI directly (portable version without JDK)
+RUN wget --progress=dot:giga -O fiji.zip \
+        https://downloads.imagej.net/fiji/latest/fiji-latest-portable-nojava.zip && \
+    unzip -q fiji.zip -d /opt && \
+    rm fiji.zip && \
     chmod +x /opt/Fiji.app/ImageJ-linux64
 
 # Set FIJI environment variable
