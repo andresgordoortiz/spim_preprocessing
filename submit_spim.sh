@@ -136,7 +136,7 @@ singularity exec --nv \
     -B "$PSF_DIR" \
     -B "$WORK_DIR" \
     "$CONTAINER_IMAGE" \
-    mamba run -n microscopy_env python "$SCRIPT_PATH" \
+    /bin/micromamba run -n microscopy_env python "$SCRIPT_PATH" \
     --input_file "$INPUT_FILE" \
     --outdir "$OUTPUT_DIR" \
     --psf_path "$PSF_FILE" \
