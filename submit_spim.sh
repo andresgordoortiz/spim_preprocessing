@@ -30,7 +30,7 @@ PSF_FILE="/groups/pinheiro/user/guilherme.ventura/for_analysis/SPIM/things_from_
 SCRIPT_PATH="spim_pipeline_fixed.py"
 
 # Container version (update this when you update the container)
-CONTAINER_IMAGE="docker://ghcr.io/andresgordoortiz/spim_preprocessing:sha-b5d9ab5"
+CONTAINER_IMAGE="docker://ghcr.io/andresgordoortiz/spim_preprocessing:latest"
 
 # ==========================================
 # INPUT VALIDATION
