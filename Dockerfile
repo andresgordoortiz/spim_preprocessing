@@ -1,44 +1,44 @@
-# --- Stage 1: Source Fiji ---
-FROM fiji/fiji:latest AS fiji_source
+# Multi-stage build for microscopy analysis
 
-# --- Stage 2: Final Build ---
-FROM mambaorg/micromamba:1.5.1
+# Stage 1: Base image with Python/Conda environment
+FROM mambaorg/micromamba:1.5.10 AS base
 
 USER root
 
-# 1. Install System Dependencies
+# 1. Install system dependencies
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
         wget unzip ca-certificates openjdk-17-jre-headless \
         libgl1 libglib2.0-0 libxrender1 libxtst6 libxi6 libxext6 && \
     apt-get clean && rm -rf /var/lib/apt/lists/*
 
-# 2. Setup Python Environment
+# 2. Setup working directory
 WORKDIR /app
-COPY --chown=$MAMBA_USER:$MAMBA_USER microscopy_env.yml .
 
-# Cache mount for space-saving on GitHub Actions
+# 3. Copy and create conda environment
+COPY --chown=mambauser:mambauser microscopy_env.yml .
 RUN --mount=type=cache,target=/opt/conda/pkgs \
     micromamba create -f microscopy_env.yml -y
 
-# 3. Setup FIJI (ImageJ)
-# The official fiji/fiji image keeps the app in /fiji
-COPY --from=fiji_source /fiji /opt/fiji
-RUN chmod +x /opt/fiji/ImageJ-linux64
+# 4. Download and setup FIJI directly
+RUN wget -q https://downloads.imagej.net/fiji/latest/fiji-nojre.zip && \
+    unzip -q fiji-nojre.zip -d /opt && \
+    rm fiji-nojre.zip && \
+    chmod +x /opt/Fiji.app/ImageJ-linux64
 
-# Set Environment Variables
-ENV PATH="/opt/fiji:$PATH"
-ENV FIJI_BIN="/opt/fiji/ImageJ-linux64"
+# Set FIJI environment variable
+ENV FIJI_ROOT=/opt/Fiji.app
+ENV PATH="${FIJI_ROOT}:${PATH}"
 
-# 4. Update Fiji and Enable TrackMate/Cellpose sites
-# We run these as a single layer to save space.
-# '--headless' is added to ensure it doesn't try to open a window during build.
-RUN $FIJI_BIN --headless --update update && \
-    $FIJI_BIN --headless --update add-update-site TrackMate-Helper https://sites.imagej.net/TrackMate-Helper/ && \
-    $FIJI_BIN --headless --update add-update-site CSBDeep https://sites.imagej.net/CSBDeep/ && \
-    $FIJI_BIN --headless --update apply-changes
+# 5. Switch to non-root user
+USER mambauser
 
-# 5. Final Configuration
-WORKDIR /data
-ENTRYPOINT ["/usr/local/bin/_entrypoint.sh"]
-CMD ["micromamba", "run", "-n", "microscopy_env", "bash"]
+# 6. Set up the micromamba environment activation
+ARG MAMBA_DOCKERFILE_ACTIVATE=1
+ENV ENV_NAME=microscopy_env
+
+# 7. Copy application code
+COPY --chown=mambauser:mambauser . /app
+
+# 8. Default command
+CMD ["/bin/bash"]
