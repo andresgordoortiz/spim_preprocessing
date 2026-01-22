@@ -7,7 +7,7 @@
 #SBATCH --cpus-per-task=8                # 8 CPUs para operaciones numpy/clahe
 #SBATCH --mem=64G                        # 64GB de RAM (Stack 3D son pesados)
 #SBATCH --time=02:00:00                  # Límite de tiempo por imagen
-#SBATCH --array=0-10%5                   # Modificar según nro de imágenes (ej: 0-99). %5 limita a 5 jobs simultáneos.
+#SBATCH --array=1
 
 # ==========================================
 # VARIABLES DEL USUARIO (EDITAR AQUI)
