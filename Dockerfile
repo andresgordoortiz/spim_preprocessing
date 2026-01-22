@@ -21,8 +21,11 @@ RUN --mount=type=cache,target=/opt/conda/pkgs \
     micromamba create -f microscopy_env.yml -y
 
 # 4. Download and setup FIJI directly
-RUN wget -q https://downloads.imagej.net/fiji/latest/fiji-nojre.zip && \
-    unzip -q fiji-nojre.zip -d /opt && \
+RUN wget --progress=dot:giga -O fiji-nojre.zip https://downloads.imagej.net/fiji/latest/fiji-nojre.zip && \
+    ls -lh fiji-nojre.zip && \
+    file fiji-nojre.zip && \
+    unzip fiji-nojre.zip -d /opt && \
+    ls -la /opt/ && \
     rm fiji-nojre.zip && \
     chmod +x /opt/Fiji.app/ImageJ-linux64
 
