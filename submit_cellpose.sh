@@ -7,7 +7,7 @@
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=32G
 #SBATCH --time=01:00:00
-#SBATCH --array=0                      # Adjust based on number of files
+#SBATCH --array=0                   # Adjust based on number of files
 
 # ==========================================
 # SETUP AND VALIDATION
@@ -54,7 +54,7 @@ CHAN2="0"
 USE_GPU=true
 SAVE_OUTLINES=true
 SAVE_FLOWS=true
-SAVE_NPY=true
+SAVE_NPY=true  # NPY files saved by default; set false to disable
 
 # ==========================================
 # INPUT VALIDATION
@@ -114,9 +114,9 @@ echo "  Flow threshold: $FLOW_THRESHOLD"
 echo "  Cell probability threshold: $CELLPROB_THRESHOLD"
 echo "  Channels: [$CHAN, $CHAN2]"
 echo "  Use GPU: $USE_GPU"
-echo "  Save outlines: $SAVE_OUTLINES"
+echo "  Save outlines (PNG): $SAVE_OUTLINES"
 echo "  Save flows: $SAVE_FLOWS"
-echo "  Save NPY: $SAVE_NPY"
+echo "  Save NPY masks: $SAVE_NPY"
 echo "=========================================="
 
 # ==========================================
@@ -150,8 +150,8 @@ if [ "$SAVE_FLOWS" = true ]; then
     CELLPOSE_CMD+=" --save_flows"
 fi
 
-if [ "$SAVE_NPY" = true ]; then
-    CELLPOSE_CMD+=" --save_npy"
+if [ "$SAVE_NPY" = false ]; then
+    CELLPOSE_CMD+=" --no_npy"
 fi
 
 # Add verbose output
