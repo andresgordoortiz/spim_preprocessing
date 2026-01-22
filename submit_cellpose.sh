@@ -7,6 +7,7 @@
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=32G
 #SBATCH --time=01:00:00
+#SBATCH --exclude=clip-g1-[0-6]          # Exclude P100 nodes (use V100/RTX/A100 only)
 #SBATCH --array=0                   # Adjust based on number of files
 
 # ==========================================
