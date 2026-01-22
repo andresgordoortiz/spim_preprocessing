@@ -274,7 +274,7 @@ def main():
     # Background / Post-processing
     parser.add_argument("--resolution_px0", type=float, default=10, help="BG Subtraction resolution")
     parser.add_argument("--resolution_pz0", type=float, default=10, help="BG Subtraction resolution Z")
-    parser.add_argument("--noise_lvl", type=float, default=2, help="Noise level")
+    parser.add_argument("--noise_lvl", type=int, default=2, help="Noise level (MUST BE INTEGER)")  # FIXED: Changed from float to int
     parser.add_argument("--sigma", type=float, default=1.0, help="Gaussian smoothing sigma")
 
     args = parser.parse_args()
@@ -458,7 +458,6 @@ def main():
         res_gpu = rl.doRLDeconvolutionFromNpArrays(img_xz, psf_xz, niter=args.niter, resAsUint8=False)
         img_xz = res_gpu[args.padding:-args.padding, args.padding:-args.padding, args.padding:-args.padding]
         img = np.transpose(img_xz, [1, 0, 2])
-        # Note: psf transpose removed as it's unused after this point
         t1 = time.time()
         print(f"[Timer] 2D (XZ) deconvolution took {t1 - t0:.2f} seconds")
         print_resource_usage()
