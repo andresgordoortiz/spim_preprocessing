@@ -39,7 +39,8 @@ CONTAINER_IMAGE="docker://ghcr.io/andresgordoortiz/spim_preprocessing:sha-8720ee
 MODEL="nuclei"
 
 # Diameter of cells in pixels (0 = auto-estimate)
-DIAMETER=0
+# NOT ZERO FOR 3D IMAGES!!!!
+DIAMETER=15
 
 # Flow threshold (higher = more conservative segmentation)
 FLOW_THRESHOLD=0.4
