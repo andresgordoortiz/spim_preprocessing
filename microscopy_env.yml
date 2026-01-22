@@ -19,6 +19,7 @@ dependencies:
   - imagecodecs
   - tifffile
   - pywavelets
+  - redlionfish
 
   # Microscopy-specific
   - nd2reader
