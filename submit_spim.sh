@@ -1,25 +1,27 @@
 #!/bin/bash
-#SBATCH --job-name=spim_process
-#SBATCH --output=logs/spim_%A_%a.out
-#SBATCH --error=logs/spim_%A_%a.err
-#SBATCH --partition=g                    # OBLIGATORIO: Partición con GPU (RedLionfish requiere CUDA)
-#SBATCH --gres=gpu:1                     # Solicitamos 1 GPU por tarea
-#SBATCH --cpus-per-task=8                # 8 CPUs para operaciones numpy/clahe
-#SBATCH --mem=64G                        # 64GB de RAM (Stack 3D son pesados)
-#SBATCH --time=02:00:00                  # Límite de tiempo por imagen
-#SBATCH --array=1
+#SBATCH --job-name=spim_single
+#SBATCH --output=logs/spim_single_%j.out
+#SBATCH --error=logs/spim_single_%j.err
+#SBATCH --partition=g                    # GPU Partition
+#SBATCH --gres=gpu:1                     # 1 GPU
+#SBATCH --cpus-per-task=8
+#SBATCH --mem=64G
+#SBATCH --time=02:00:00
 
 # ==========================================
-# VARIABLES DEL USUARIO (EDITAR AQUI)
+# VARIABLES DEL USUARIO
 # ==========================================
 
-# Rutas en el host (cluster)
-INPUT_DIR="/groups/pinheiro/user/andres.gordo/projects/spim_preprocessing/data/input_low-res"
-OUTPUT_DIR="/groups/pinheiro/user/andres.gordo/projects/spim_preprocessing/results/first_try_sbatch"
+# Define the specific file you want to process
+INPUT_FILE="/groups/pinheiro/user/andres.gordo/projects/spim_preprocessing/data/input_low-res/YOUR_IMAGE_NAME.tif"
+OUTPUT_DIR="/groups/pinheiro/user/andres.gordo/projects/spim_preprocessing/results/single_run"
 PSF_FILE="/groups/pinheiro/user/guilherme.ventura/for_analysis/SPIM/things_from_Andres/scripts_from_Andres/image_processing_script/psf_models/PSF_small_low-res.tif"
 SCRIPT_PATH="spim_pipeline.py"
 
-# Parámetros del pipeline (puedes cambiar valores aquí)
+# Extraction of path components for mounting
+INPUT_DIR=$(dirname "$INPUT_FILE")
+
+# Parameters
 PARAMS=(
     "--image_scaling 0.5"
     "--niter 3"
@@ -27,59 +29,30 @@ PARAMS=(
     "--percentile_low 40"
     "--percentile_high 99.99"
     "--sigma 1.0"
-    # Añadir flags booleanos si se desea desactivar pasos:
-    # "--no_clahe"
-    # "--no_shading"
 )
 
-# Crear directorio de logs si no existe
 mkdir -p logs
-
-# ==========================================
-# LOGICA DEL ARRAY (NO EDITAR LOGICA BASICA)
-# ==========================================
-
-
-# Obtener lista de imágenes (tif, tiff, nd2)
-shopt -s nullglob
-FILES=(${INPUT_DIR}/*.tif ${INPUT_DIR}/*.tiff ${INPUT_DIR}/*.nd2)
-NUM_FILES=${#FILES[@]}
-
-# Chequear que el ID del array sea válido para la cantidad de archivos
-if [ $SLURM_ARRAY_TASK_ID -ge $NUM_FILES ]; then
-    echo "Task ID $SLURM_ARRAY_TASK_ID excede el número de archivos ($NUM_FILES). Saliendo."
-    exit 0
-fi
-
-CURRENT_FILE="${FILES[$SLURM_ARRAY_TASK_ID]}"
-FILENAME=$(basename "$CURRENT_FILE")
+mkdir -p "$OUTPUT_DIR"
 
 echo "=========================================="
-echo "Job ID: $SLURM_JOB_ID, Task ID: $SLURM_ARRAY_TASK_ID"
-echo "Node: $HOSTNAME"
-echo "Procesando archivo: $FILENAME"
-echo "GPU info:"
-nvidia-smi --query-gpu=name,memory.total,utilization.gpu --format=csv
+echo "Job ID: $SLURM_JOB_ID"
+echo "Procesando archivo: $INPUT_FILE"
 echo "=========================================="
 
 # ==========================================
 # EJECUCIÓN CON SINGULARITY
 # ==========================================
 
-# Construimos el comando.
-# Importante: --nv habilita el soporte de GPU en Singularity.
-# -B monta las carpetas necesarias para que el contenedor las vea.
-
 singularity exec --nv \
     -B "$INPUT_DIR" \
     -B "$OUTPUT_DIR" \
     -B "$(dirname "$PSF_FILE")" \
-    -B "$(dirname "$SCRIPT_PATH")" \
+    -B "$(pwd)" \
     ghcr.io/andresgordoortiz/spim_preprocessing:sha-b5d9ab5 \
     python "$SCRIPT_PATH" \
-    --input_file "$CURRENT_FILE" \
+    --input_file "$INPUT_FILE" \
     --outdir "$OUTPUT_DIR" \
     --psf_path "$PSF_FILE" \
-    ${PARAMS[@]}
+    "${PARAMS[@]}"
 
-echo "Procesamiento finalizado para $FILENAME"
+echo "Procesamiento finalizado."
