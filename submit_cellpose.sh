@@ -27,7 +27,7 @@ fi
 # ==========================================
 # Input directory containing processed TIFF files
 INPUT_DIR="/groups/pinheiro/user/andres.gordo/projects/spim_preprocessing/results/first_try_sbatch"
-OUTPUT_DIR="/groups/pinheiro/user/andres.gordo/projects/spim_preprocessing/results/cellpose_segmentation"
+OUTPUT_DIR="$INPUT_DIR/cellpose_segmentation"
 
 # Container version (same as preprocessing)
 CONTAINER_IMAGE="docker://ghcr.io/andresgordoortiz/spim_preprocessing:sha-8720eea"
@@ -36,27 +36,33 @@ CONTAINER_IMAGE="docker://ghcr.io/andresgordoortiz/spim_preprocessing:sha-8720ee
 # CELLPOSE PARAMETERS
 # ==========================================
 # Model selection: 'cyto', 'cyto2', 'nuclei', or path to custom model
-MODEL="nuclei"
+MODEL="cpsam_Gui_tracking_20250801"
 
 # Diameter of cells in pixels (0 = auto-estimate)
 # NOT ZERO FOR 3D IMAGES!!!!
-DIAMETER=15
+DIAMETER=27 #For Medaka
 
 # Flow threshold (higher = more conservative segmentation)
-FLOW_THRESHOLD=0.4
+# NOTE: ImageJ macro uses -0.8, but Cellpose treats negative values as positive
+FLOW_THRESHOLD=0.8
 
 # Cell probability threshold (higher = fewer cells detected)
 CELLPROB_THRESHOLD=0.0
 
-# Channels to use [cytoplasm, nucleus] - [0,0] = grayscale
-CHAN="0"
-CHAN2="0"
+# Channels to use [cytoplasm, nucleus]
+# ImageJ macro uses ch1=1, ch2=0 (grayscale on channel 1, no nuclear channel)
+CHAN="1"
+CHAN2="0"  # Changed from "2" to "0" to match ImageJ macro
 
 # Additional flags
 USE_GPU=true
+DO_3D=true  # Set true for 3D images
 SAVE_OUTLINES=true
 SAVE_FLOWS=true
 SAVE_NPY=true  # NPY files saved by default; set false to disable
+
+# File exclusion patterns (matching ImageJ macro logic)
+EXCLUDE_PATTERNS=("Cellseg.tif" "Sarco.tif" "Label")
 
 # ==========================================
 # INPUT VALIDATION
@@ -79,15 +85,43 @@ fi
 mkdir -p "$OUTPUT_DIR"
 
 # ==========================================
-# FILE ARRAY SETUP
+# FILE ARRAY SETUP WITH EXCLUSIONS
 # ==========================================
-# Get list of all TIFF files in input directory
-mapfile -t FILES < <(find "$INPUT_DIR" -maxdepth 1 -type f \( -name "*.tif" -o -name "*.tiff" \) | sort)
+# Function to check if file should be excluded
+should_exclude() {
+    local filename="$1"
+
+    # Exclude .ijm files
+    if [[ "$filename" == *.ijm ]]; then
+        return 0  # exclude
+    fi
+
+    # Check against exclusion patterns
+    for pattern in "${EXCLUDE_PATTERNS[@]}"; do
+        if [[ "$filename" == *"$pattern"* ]]; then
+            return 0  # exclude
+        fi
+    done
+
+    return 1  # don't exclude
+}
+
+# Get list of all TIFF files, excluding unwanted patterns
+TEMP_FILES=()
+while IFS= read -r -d '' file; do
+    filename=$(basename "$file")
+    if ! should_exclude "$filename"; then
+        TEMP_FILES+=("$file")
+    fi
+done < <(find "$INPUT_DIR" -maxdepth 1 -type f \( -name "*.tif" -o -name "*.tiff" \) -print0 | sort -z)
+
+# Convert to regular array
+FILES=("${TEMP_FILES[@]}")
 
 # Get total number of files
 TOTAL_FILES=${#FILES[@]}
 
-echo "Total files found: $TOTAL_FILES"
+echo "Total files found (after exclusions): $TOTAL_FILES"
 
 # Check if array task ID is valid
 if [ "$SLURM_ARRAY_TASK_ID" -ge "$TOTAL_FILES" ]; then
@@ -116,6 +150,7 @@ echo "  Flow threshold: $FLOW_THRESHOLD"
 echo "  Cell probability threshold: $CELLPROB_THRESHOLD"
 echo "  Channels: [$CHAN, $CHAN2]"
 echo "  Use GPU: $USE_GPU"
+echo "  3D Mode: $DO_3D"
 echo "  Save outlines (PNG): $SAVE_OUTLINES"
 echo "  Save flows: $SAVE_FLOWS"
 echo "  Save NPY masks: $SAVE_NPY"
@@ -142,6 +177,10 @@ CELLPOSE_CMD+=" --chan $CHAN --chan2 $CHAN2"
 
 if [ "$USE_GPU" = true ]; then
     CELLPOSE_CMD+=" --use_gpu"
+fi
+
+if [ "$DO_3D" = true ]; then
+    CELLPOSE_CMD+=" --do_3D"
 fi
 
 if [ "$SAVE_OUTLINES" = true ]; then
@@ -178,13 +217,33 @@ singularity exec --nv \
 EXIT_CODE=$?
 
 # ==========================================
+# RENAME OUTPUT TO MATCH IMAGEJ CONVENTION
+# ==========================================
+if [ $EXIT_CODE -eq 0 ]; then
+    # Get base filename without extension
+    BASE_NAME=$(basename "$FILENAME" .tif)
+    BASE_NAME=$(basename "$BASE_NAME" .tiff)
+
+    # Cellpose default output: {basename}_cp_masks.tif
+    # ImageJ output: {basename}_Cellseg.tif
+    CELLPOSE_OUTPUT="${OUTPUT_DIR}/${BASE_NAME}_cp_masks.tif"
+    IMAGEJ_STYLE_OUTPUT="${OUTPUT_DIR}/${BASE_NAME}_Cellseg.tif"
+
+    if [ -f "$CELLPOSE_OUTPUT" ]; then
+        echo "Renaming output to match ImageJ convention..."
+        mv "$CELLPOSE_OUTPUT" "$IMAGEJ_STYLE_OUTPUT"
+        echo "Renamed: $CELLPOSE_OUTPUT -> $IMAGEJ_STYLE_OUTPUT"
+    fi
+fi
+
+# ==========================================
 # COMPLETION
 # ==========================================
 echo "=========================================="
 if [ $EXIT_CODE -eq 0 ]; then
     echo "Segmentation completed successfully!"
     echo "Output saved to: $OUTPUT_DIR"
-    
+
     # List output files for this image
     echo "Output files for $FILENAME:"
     BASE_NAME=$(basename "$FILENAME" .tif)
