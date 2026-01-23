@@ -87,9 +87,6 @@ FLOW_THRESHOLD=0.8
 # Cell probability threshold (higher = fewer cells detected)
 CELLPROB_THRESHOLD=0.0
 
-# Channel to segment (updated to new Cellpose API)
-# 0=grayscale, 1=red, 2=green, 3=blue
-CHANNEL=0  # grayscale (replaces old chan/chan2 syntax)
 
 # Additional flags
 USE_GPU=true
@@ -185,7 +182,6 @@ echo "  Model: $MODEL"
 echo "  Diameter: $DIAMETER"
 echo "  Flow threshold: $FLOW_THRESHOLD"
 echo "  Cell probability threshold: $CELLPROB_THRESHOLD"
-echo "  Channel: $CHANNEL"
 echo "  Use GPU: $USE_GPU"
 echo "  3D Mode: $DO_3D"
 echo "  Save outlines (PNG): $SAVE_OUTLINES"
@@ -211,7 +207,6 @@ CELLPOSE_CMD+=" --pretrained_model $MODEL"
 CELLPOSE_CMD+=" --diameter $DIAMETER"
 CELLPOSE_CMD+=" --flow_threshold $FLOW_THRESHOLD"
 CELLPOSE_CMD+=" --cellprob_threshold $CELLPROB_THRESHOLD"
-CELLPOSE_CMD+=" --channel $CHANNEL"
 
 if [ "$USE_GPU" = true ]; then
     CELLPOSE_CMD+=" --use_gpu"
