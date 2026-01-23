@@ -77,21 +77,19 @@ CONTAINER_IMAGE="docker://ghcr.io/andresgordoortiz/spim_preprocessing:sha-8720ee
 MODEL="/groups/pinheiro/user/guilherme.ventura/for_analysis/SPIM/things_from_Thomas/cellpose/models/cpsam_Gui_tracking_20250801"
 MODEL=$(realpath "$MODEL")
 
-# Diameter of cells in pixels (0 = auto-estimxate)
+# Diameter of cells in pixels (0 = auto-estimate)
 # NOT ZERO FOR 3D IMAGES!!!!
 DIAMETER=27 #For Medaka
 
 # Flow threshold (higher = more conservative segmentation)
-# NOTE: ImageJ macro uses -0.8, but Cellpose treats negative values as positive
 FLOW_THRESHOLD=0.8
 
 # Cell probability threshold (higher = fewer cells detected)
 CELLPROB_THRESHOLD=0.0
 
-# Channels to use [cytoplasm, nucleus]
-# ImageJ macro uses ch1=1, ch2=0 (grayscale on channel 1, no nuclear channel)
-CHAN="1"
-CHAN2="0"  # Changed from "2" to "0" to match ImageJ macro
+# Channel to segment (updated to new Cellpose API)
+# 0=grayscale, 1=red, 2=green, 3=blue
+CHANNEL=0  # grayscale (replaces old chan/chan2 syntax)
 
 # Additional flags
 USE_GPU=true
@@ -187,7 +185,7 @@ echo "  Model: $MODEL"
 echo "  Diameter: $DIAMETER"
 echo "  Flow threshold: $FLOW_THRESHOLD"
 echo "  Cell probability threshold: $CELLPROB_THRESHOLD"
-echo "  Channels: [$CHAN, $CHAN2]"
+echo "  Channel: $CHANNEL"
 echo "  Use GPU: $USE_GPU"
 echo "  3D Mode: $DO_3D"
 echo "  Save outlines (PNG): $SAVE_OUTLINES"
@@ -207,12 +205,13 @@ echo "=========================================="
 # ==========================================
 # BUILD CELLPOSE COMMAND
 # ==========================================
-CELLPOSE_CMD="cellpose --dir $INPUT_DIR --image_path $INPUT_FILE --savedir $OUTPUT_DIR"
+# Use --image_path for single file, --savedir for output
+CELLPOSE_CMD="cellpose --image_path $INPUT_FILE --savedir $OUTPUT_DIR"
 CELLPOSE_CMD+=" --pretrained_model $MODEL"
 CELLPOSE_CMD+=" --diameter $DIAMETER"
 CELLPOSE_CMD+=" --flow_threshold $FLOW_THRESHOLD"
 CELLPOSE_CMD+=" --cellprob_threshold $CELLPROB_THRESHOLD"
-CELLPOSE_CMD+=" --chan $CHAN --chan2 $CHAN2"
+CELLPOSE_CMD+=" --channel $CHANNEL"
 
 if [ "$USE_GPU" = true ]; then
     CELLPOSE_CMD+=" --use_gpu"
@@ -246,9 +245,14 @@ echo "=========================================="
 # ==========================================
 echo "Starting Cellpose segmentation..."
 
+# Bind both input directory and output directory
+# Also bind model directory if it's outside input dir
+MODEL_DIR=$(dirname "$MODEL")
+
 singularity exec --nv \
     -B "$INPUT_DIR" \
     -B "$OUTPUT_DIR" \
+    -B "$MODEL_DIR" \
     "$CONTAINER_IMAGE" \
     /bin/micromamba run -n microscopy_env \
     $CELLPOSE_CMD
@@ -272,6 +276,10 @@ if [ $EXIT_CODE -eq 0 ]; then
         echo "Renaming output to match ImageJ convention..."
         mv "$CELLPOSE_OUTPUT" "$IMAGEJ_STYLE_OUTPUT"
         echo "Renamed: $CELLPOSE_OUTPUT -> $IMAGEJ_STYLE_OUTPUT"
+    else
+        echo "WARNING: Expected output file not found: $CELLPOSE_OUTPUT"
+        echo "Listing all files in output directory:"
+        ls -lh "$OUTPUT_DIR"
     fi
 fi
 
