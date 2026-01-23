@@ -87,11 +87,10 @@ FLOW_THRESHOLD=0.8
 # Cell probability threshold (higher = fewer cells detected)
 CELLPROB_THRESHOLD=0.0
 
-
 # Additional flags
 USE_GPU=true
 DO_3D=true  # Set true for 3D images
-SAVE_OUTLINES=true
+SAVE_TIF=true  # MUST use TIF for 3D (PNG doesn't work with 3D)
 SAVE_FLOWS=true
 SAVE_NPY=true  # NPY files saved by default; set false to disable
 
@@ -184,7 +183,7 @@ echo "  Flow threshold: $FLOW_THRESHOLD"
 echo "  Cell probability threshold: $CELLPROB_THRESHOLD"
 echo "  Use GPU: $USE_GPU"
 echo "  3D Mode: $DO_3D"
-echo "  Save outlines (PNG): $SAVE_OUTLINES"
+echo "  Save TIF: $SAVE_TIF"
 echo "  Save flows: $SAVE_FLOWS"
 echo "  Save NPY masks: $SAVE_NPY"
 echo "=========================================="
@@ -201,12 +200,13 @@ echo "=========================================="
 # ==========================================
 # BUILD CELLPOSE COMMAND
 # ==========================================
-# Use --image_path for single file, --savedir for output
+# Use --image_path for single file and --savedir for output location
 CELLPOSE_CMD="cellpose --image_path $INPUT_FILE --savedir $OUTPUT_DIR"
 CELLPOSE_CMD+=" --pretrained_model $MODEL"
 CELLPOSE_CMD+=" --diameter $DIAMETER"
 CELLPOSE_CMD+=" --flow_threshold $FLOW_THRESHOLD"
 CELLPOSE_CMD+=" --cellprob_threshold $CELLPROB_THRESHOLD"
+
 
 if [ "$USE_GPU" = true ]; then
     CELLPOSE_CMD+=" --use_gpu"
@@ -216,8 +216,9 @@ if [ "$DO_3D" = true ]; then
     CELLPOSE_CMD+=" --do_3D"
 fi
 
-if [ "$SAVE_OUTLINES" = true ]; then
-    CELLPOSE_CMD+=" --save_png"
+# CRITICAL: For 3D images, MUST use --save_tif, NOT --save_png
+if [ "$SAVE_TIF" = true ]; then
+    CELLPOSE_CMD+=" --save_tif"
 fi
 
 if [ "$SAVE_FLOWS" = true ]; then
@@ -240,8 +241,7 @@ echo "=========================================="
 # ==========================================
 echo "Starting Cellpose segmentation..."
 
-# Bind both input directory and output directory
-# Also bind model directory if it's outside input dir
+# Bind both input directory, output directory, and model directory
 MODEL_DIR=$(dirname "$MODEL")
 
 singularity exec --nv \
