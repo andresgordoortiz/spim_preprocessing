@@ -74,9 +74,10 @@ CONTAINER_IMAGE="docker://ghcr.io/andresgordoortiz/spim_preprocessing:sha-8720ee
 # CELLPOSE PARAMETERS
 # ==========================================
 # Model selection: 'cyto', 'cyto2', 'nuclei', or path to custom model
-MODEL="cpsam_Gui_tracking_20250801"
+MODEL="/groups/pinheiro/user/guilherme.ventura/for_analysis/SPIM/things_from_Thomas/cellpose/models/cpsam_Gui_tracking_20250801"
+MODEL=$(realpath "$MODEL")
 
-# Diameter of cells in pixels (0 = auto-estimate)
+# Diameter of cells in pixels (0 = auto-estimxate)
 # NOT ZERO FOR 3D IMAGES!!!!
 DIAMETER=27 #For Medaka
 
