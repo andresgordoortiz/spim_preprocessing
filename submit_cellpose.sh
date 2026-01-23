@@ -15,6 +15,44 @@
 # ==========================================
 set -euo pipefail  # Exit on error, undefined variables, pipe failures
 
+# ==========================================
+# PARSE COMMAND LINE ARGUMENTS
+# ==========================================
+# Default values
+INPUT_DIR=""
+OUTPUT_SUBFOLDER="cellpose_segmentation"
+
+# Parse arguments
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        -I|--input)
+            INPUT_DIR="$2"
+            shift 2
+            ;;
+        -O|--output)
+            OUTPUT_SUBFOLDER="$2"
+            shift 2
+            ;;
+        *)
+            echo "Unknown option: $1"
+            echo "Usage: sbatch $0 -I <input_dir> [-O <output_subfolder_name>]"
+            exit 1
+            ;;
+    esac
+done
+
+# Validate required arguments
+if [ -z "$INPUT_DIR" ]; then
+    echo "ERROR: Input directory is required"
+    echo "Usage: sbatch $0 -I <input_dir> [-O <output_subfolder_name>]"
+    echo "Example: sbatch $0 -I /path/to/images"
+    echo "         (creates output in /path/to/images/cellpose_segmentation)"
+    exit 1
+fi
+
+# Set output directory as subfolder of input
+OUTPUT_DIR="${INPUT_DIR}/${OUTPUT_SUBFOLDER}"
+
 # Create logs directory (must exist before job submission for SLURM)
 # Run this BEFORE submitting: mkdir -p logs
 if [ ! -d "logs" ]; then
@@ -25,9 +63,6 @@ fi
 # ==========================================
 # USER VARIABLES
 # ==========================================
-# Input directory containing processed TIFF files
-INPUT_DIR="/groups/pinheiro/user/andres.gordo/projects/spim_preprocessing/results/first_try_sbatch"
-OUTPUT_DIR="$INPUT_DIR/cellpose_segmentation"
 
 # Container version (same as preprocessing)
 CONTAINER_IMAGE="docker://ghcr.io/andresgordoortiz/spim_preprocessing:sha-8720eea"
