@@ -50,6 +50,9 @@ if [ -z "$INPUT_DIR" ]; then
     exit 1
 fi
 
+# Convert to absolute path (required for Singularity bind mounts)
+INPUT_DIR=$(realpath "$INPUT_DIR")
+
 # Set output directory as subfolder of input
 OUTPUT_DIR="${INPUT_DIR}/${OUTPUT_SUBFOLDER}"
 
@@ -71,7 +74,7 @@ CONTAINER_IMAGE="docker://ghcr.io/andresgordoortiz/spim_preprocessing:sha-8720ee
 # CELLPOSE PARAMETERS
 # ==========================================
 # Model selection: 'cyto', 'cyto2', 'nuclei', or path to custom model
-MODEL="/groups/pinheiro/user/guilherme.ventura/for_analysis/SPIM/things_from_Thomas/cellpose/models/cpsam_Gui_tracking_20250801"
+MODEL="cpsam_Gui_tracking_20250801"
 
 # Diameter of cells in pixels (0 = auto-estimate)
 # NOT ZERO FOR 3D IMAGES!!!!
