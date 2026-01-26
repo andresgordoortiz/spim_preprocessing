@@ -5,7 +5,7 @@
 #SBATCH --partition=g                    # GPU Partition
 #SBATCH --gres=gpu:1                     # 1 GPU per task
 #SBATCH --cpus-per-task=4
-#SBATCH --mem=64G
+#SBATCH --mem=64G #Increase dramatically in case you need the NPY or flow files
 #SBATCH --time=02:00:00
 #SBATCH --exclude=clip-g1-[0-6]          # Exclude P100 nodes (use V100/RTX/A100 only)
 #SBATCH --array=0                   # Adjust based on number of files
