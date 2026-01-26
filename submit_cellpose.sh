@@ -91,8 +91,8 @@ CELLPROB_THRESHOLD=0.0
 USE_GPU=true
 DO_3D=true  # Set true for 3D images
 SAVE_TIF=true  # MUST use TIF for 3D (PNG doesn't work with 3D)
-SAVE_FLOWS=true
-SAVE_NPY=true  # NPY files saved by default; set false to disable
+SAVE_FLOWS=false
+SAVE_NPY=false  # NPY files saved by default; set false to disable
 
 # File exclusion patterns (matching ImageJ macro logic)
 EXCLUDE_PATTERNS=("Cellseg.tif" "Sarco.tif" "Label")
