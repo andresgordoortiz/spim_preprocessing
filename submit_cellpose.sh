@@ -120,7 +120,6 @@ DO_3D=true  # Set true for 3D images
 SAVE_TIF=true  # MUST use TIF for 3D (PNG doesn't work with 3D)
 SAVE_FLOWS=false
 SAVE_NPY=false  # NPY files saved by default
-USE_TILING=true
 
 # File exclusion patterns (matching ImageJ macro logic)
 EXCLUDE_PATTERNS=("Cellseg.tif" "Sarco.tif" "Label")
@@ -322,9 +321,7 @@ if [ "$SAVE_NPY" = false ]; then
     CELLPOSE_CMD+=" --no_npy"
 fi
 
-if [ "$USE_TILING" = true ]; then
-    CELLPOSE_CMD+=" --tile"
-fi
+
 # Add verbose output
 CELLPOSE_CMD+=" --verbose"
 
