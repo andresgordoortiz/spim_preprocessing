@@ -16,32 +16,27 @@
 set -euo pipefail  # Exit on error, undefined variables, pipe failures
 
 # ==========================================
-# CREATE ISOLATED TEMPORARY ENVIRONMENT
+# CREATE ISOLATED TEMPORARY CACHE
 # ==========================================
 # Create unique temporary directory for this job instance
-JOB_TEMP_DIR="/tmp/cellpose_${SLURM_ARRAY_JOB_ID}_${SLURM_ARRAY_TASK_ID}_$$"
+JOB_TEMP_DIR="/tmp/cellpose_${SLURM_ARRAY_JOB_ID}_${SLURM_ARRAY_TASK_ID}_$"
 mkdir -p "$JOB_TEMP_DIR"
 
-# Set all conda/mamba environment variables to use isolated locations
+# Only isolate cache and lock files, NOT the environment itself
+# The microscopy_env exists in the container and should not be redirected
 export CONDA_PKGS_DIRS="${JOB_TEMP_DIR}/pkgs"
-export CONDA_ENVS_DIRS="${JOB_TEMP_DIR}/envs"
-export MAMBA_ROOT_PREFIX="${JOB_TEMP_DIR}/mamba"
 export MAMBA_PKGS_DIRS="${JOB_TEMP_DIR}/pkgs"
-export CONDA_PREFIX="${JOB_TEMP_DIR}/conda"
+export MAMBA_ROOT_PREFIX="${JOB_TEMP_DIR}/mamba"
 
 # Prevent any caching or shared state
 export CONDA_NO_PLUGINS=true
-export CONDA_SEPARATE_SOLVERS=true
 
-# Create all required directories
+# Create required directories
 mkdir -p "$CONDA_PKGS_DIRS"
-mkdir -p "$CONDA_ENVS_DIRS"
 mkdir -p "$MAMBA_ROOT_PREFIX"
-mkdir -p "$MAMBA_PKGS_DIRS"
-mkdir -p "$CONDA_PREFIX"
 
 echo "=========================================="
-echo "Isolated Environment Setup"
+echo "Isolated Cache Setup"
 echo "Temporary directory: $JOB_TEMP_DIR"
 echo "CONDA_PKGS_DIRS: $CONDA_PKGS_DIRS"
 echo "MAMBA_ROOT_PREFIX: $MAMBA_ROOT_PREFIX"
@@ -350,18 +345,14 @@ START_TIME=$SECONDS
 # Bind input directory, output directory, model directory, AND temporary directory
 MODEL_DIR=$(dirname "$MODEL")
 
-# Export environment variables to be passed into container
-export SINGULARITYENV_CONDA_PKGS_DIRS="$CONDA_PKGS_DIRS"
-export SINGULARITYENV_CONDA_ENVS_DIRS="$CONDA_ENVS_DIRS"
-export SINGULARITYENV_MAMBA_ROOT_PREFIX="$MAMBA_ROOT_PREFIX"
-export SINGULARITYENV_MAMBA_PKGS_DIRS="$MAMBA_PKGS_DIRS"
-export SINGULARITYENV_CONDA_PREFIX="$CONDA_PREFIX"
-export SINGULARITYENV_CONDA_NO_PLUGINS="true"
-export SINGULARITYENV_CONDA_SEPARATE_SOLVERS="true"
-
-# Also set Python-specific isolation
-export SINGULARITYENV_PYTHONDONTWRITEBYTECODE="1"
-export SINGULARITYENV_PYTHONUNBUFFERED="1"
+# Export cache isolation variables to container
+# Use APPTAINERENV_ prefix (modern Singularity/Apptainer)
+export APPTAINERENV_CONDA_PKGS_DIRS="$CONDA_PKGS_DIRS"
+export APPTAINERENV_MAMBA_ROOT_PREFIX="$MAMBA_ROOT_PREFIX"
+export APPTAINERENV_MAMBA_PKGS_DIRS="$MAMBA_PKGS_DIRS"
+export APPTAINERENV_CONDA_NO_PLUGINS="true"
+export APPTAINERENV_PYTHONDONTWRITEBYTECODE="1"
+export APPTAINERENV_PYTHONUNBUFFERED="1"
 
 singularity exec --nv \
     --cleanenv \
@@ -372,18 +363,15 @@ singularity exec --nv \
     -B "$JOB_TEMP_DIR" \
     "$CONTAINER_IMAGE" \
     /bin/bash -c "
-        # Set isolation variables inside container
+        # Set cache isolation variables inside container
         export CONDA_PKGS_DIRS='$CONDA_PKGS_DIRS'
-        export CONDA_ENVS_DIRS='$CONDA_ENVS_DIRS'
         export MAMBA_ROOT_PREFIX='$MAMBA_ROOT_PREFIX'
         export MAMBA_PKGS_DIRS='$MAMBA_PKGS_DIRS'
-        export CONDA_PREFIX='$CONDA_PREFIX'
         export CONDA_NO_PLUGINS=true
-        export CONDA_SEPARATE_SOLVERS=true
         export PYTHONDONTWRITEBYTECODE=1
         export PYTHONUNBUFFERED=1
 
-        # Run micromamba with isolated environment
+        # Run micromamba with the existing container environment
         /bin/micromamba run -n microscopy_env $CELLPOSE_CMD
     "
 
