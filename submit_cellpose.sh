@@ -227,6 +227,7 @@ Flow threshold: $FLOW_THRESHOLD
 Cell probability threshold: $CELLPROB_THRESHOLD
 Use GPU: $USE_GPU
 3D Mode: $DO_3D
+Save TIF masks: $SAVE_TIF
 Save flows: $SAVE_FLOWS
 Save NPY masks: $SAVE_NPY
 
@@ -272,7 +273,6 @@ CELLPOSE_CMD+=" --diameter $DIAMETER"
 CELLPOSE_CMD+=" --flow_threshold $FLOW_THRESHOLD"
 CELLPOSE_CMD+=" --cellprob_threshold $CELLPROB_THRESHOLD"
 
-
 if [ "$USE_GPU" = true ]; then
     CELLPOSE_CMD+=" --use_gpu"
 fi
@@ -312,8 +312,10 @@ echo "$CELLPOSE_CMD" >> "$PARAM_LOG"
 # ==========================================
 echo "Starting Cellpose segmentation..."
 
+# Start timing
 START_TIME=$SECONDS
-# Bind both input directory, output directory, and model directory
+
+# Bind input directory, output directory, and model directory
 MODEL_DIR=$(dirname "$MODEL")
 
 singularity exec --nv \
@@ -386,6 +388,13 @@ fi
 
 echo "End time: $(date)"
 echo "Elapsed time: ${ELAPSED_TIME} seconds"
+
+# Clean up job-specific temporary directory
+if [ -d "$JOB_TEMP_DIR" ]; then
+    echo "Cleaning up temporary directory: $JOB_TEMP_DIR"
+    rm -rf "$JOB_TEMP_DIR"
+fi
+
 echo "=========================================="
 
 exit $EXIT_CODE
