@@ -79,7 +79,7 @@ MODEL=$(realpath "$MODEL")
 
 # Diameter of cells in pixels (0 = auto-estimate)
 # NOT ZERO FOR 3D IMAGES!!!!
-DIAMETER=27 #For Medaka
+DIAMETER=10 #For Medaka
 
 # Flow threshold (higher = more conservative segmentation)
 FLOW_THRESHOLD=0.8
