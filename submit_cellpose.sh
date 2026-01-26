@@ -385,17 +385,18 @@ ELAPSED_TIME=$((END_TIME - START_TIME))
 # ==========================================
 if [ $EXIT_CODE -eq 0 ]; then
     # Cellpose default output: {basename}_cp_masks.tif
-    # ImageJ output: {basename}_Cellseg.tif
     CELLPOSE_OUTPUT="${OUTPUT_DIR}/${BASE_NAME}_cp_masks.tif"
-    IMAGEJ_STYLE_OUTPUT="${OUTPUT_DIR}/${BASE_NAME}_Cellseg.tif"
+
+    # NEW: Include diameter in the final filename
+    IMAGEJ_STYLE_OUTPUT="${OUTPUT_DIR}/${BASE_NAME}_diam${DIAMETER}_Cellseg.tif"
 
     if [ -f "$CELLPOSE_OUTPUT" ]; then
-        echo "Renaming output to match ImageJ convention..."
+        echo "Renaming output to include diameter..."
         mv "$CELLPOSE_OUTPUT" "$IMAGEJ_STYLE_OUTPUT"
         echo "Renamed: $CELLPOSE_OUTPUT -> $IMAGEJ_STYLE_OUTPUT"
     else
         echo "WARNING: Expected output file not found: $CELLPOSE_OUTPUT"
-        echo "Listing all files in output directory:"
+        # Check if maybe it's already named correctly or listing contents
         ls -lh "$OUTPUT_DIR"
     fi
 fi
