@@ -16,6 +16,38 @@
 set -euo pipefail  # Exit on error, undefined variables, pipe failures
 
 # ==========================================
+# CREATE ISOLATED TEMPORARY ENVIRONMENT
+# ==========================================
+# Create unique temporary directory for this job instance
+JOB_TEMP_DIR="/tmp/cellpose_${SLURM_ARRAY_JOB_ID}_${SLURM_ARRAY_TASK_ID}_$$"
+mkdir -p "$JOB_TEMP_DIR"
+
+# Set all conda/mamba environment variables to use isolated locations
+export CONDA_PKGS_DIRS="${JOB_TEMP_DIR}/pkgs"
+export CONDA_ENVS_DIRS="${JOB_TEMP_DIR}/envs"
+export MAMBA_ROOT_PREFIX="${JOB_TEMP_DIR}/mamba"
+export MAMBA_PKGS_DIRS="${JOB_TEMP_DIR}/pkgs"
+export CONDA_PREFIX="${JOB_TEMP_DIR}/conda"
+
+# Prevent any caching or shared state
+export CONDA_NO_PLUGINS=true
+export CONDA_SEPARATE_SOLVERS=true
+
+# Create all required directories
+mkdir -p "$CONDA_PKGS_DIRS"
+mkdir -p "$CONDA_ENVS_DIRS"
+mkdir -p "$MAMBA_ROOT_PREFIX"
+mkdir -p "$MAMBA_PKGS_DIRS"
+mkdir -p "$CONDA_PREFIX"
+
+echo "=========================================="
+echo "Isolated Environment Setup"
+echo "Temporary directory: $JOB_TEMP_DIR"
+echo "CONDA_PKGS_DIRS: $CONDA_PKGS_DIRS"
+echo "MAMBA_ROOT_PREFIX: $MAMBA_ROOT_PREFIX"
+echo "=========================================="
+
+# ==========================================
 # PARSE COMMAND LINE ARGUMENTS
 # ==========================================
 # Default values
@@ -308,23 +340,52 @@ echo "----------------" >> "$PARAM_LOG"
 echo "$CELLPOSE_CMD" >> "$PARAM_LOG"
 
 # ==========================================
-# SINGULARITY EXECUTION
+# SINGULARITY EXECUTION WITH ISOLATION
 # ==========================================
 echo "Starting Cellpose segmentation..."
 
 # Start timing
 START_TIME=$SECONDS
 
-# Bind input directory, output directory, and model directory
+# Bind input directory, output directory, model directory, AND temporary directory
 MODEL_DIR=$(dirname "$MODEL")
 
+# Export environment variables to be passed into container
+export SINGULARITYENV_CONDA_PKGS_DIRS="$CONDA_PKGS_DIRS"
+export SINGULARITYENV_CONDA_ENVS_DIRS="$CONDA_ENVS_DIRS"
+export SINGULARITYENV_MAMBA_ROOT_PREFIX="$MAMBA_ROOT_PREFIX"
+export SINGULARITYENV_MAMBA_PKGS_DIRS="$MAMBA_PKGS_DIRS"
+export SINGULARITYENV_CONDA_PREFIX="$CONDA_PREFIX"
+export SINGULARITYENV_CONDA_NO_PLUGINS="true"
+export SINGULARITYENV_CONDA_SEPARATE_SOLVERS="true"
+
+# Also set Python-specific isolation
+export SINGULARITYENV_PYTHONDONTWRITEBYTECODE="1"
+export SINGULARITYENV_PYTHONUNBUFFERED="1"
+
 singularity exec --nv \
+    --cleanenv \
+    --contain \
     -B "$INPUT_DIR" \
     -B "$OUTPUT_DIR" \
     -B "$MODEL_DIR" \
+    -B "$JOB_TEMP_DIR" \
     "$CONTAINER_IMAGE" \
-    /bin/micromamba run -n microscopy_env \
-    $CELLPOSE_CMD
+    /bin/bash -c "
+        # Set isolation variables inside container
+        export CONDA_PKGS_DIRS='$CONDA_PKGS_DIRS'
+        export CONDA_ENVS_DIRS='$CONDA_ENVS_DIRS'
+        export MAMBA_ROOT_PREFIX='$MAMBA_ROOT_PREFIX'
+        export MAMBA_PKGS_DIRS='$MAMBA_PKGS_DIRS'
+        export CONDA_PREFIX='$CONDA_PREFIX'
+        export CONDA_NO_PLUGINS=true
+        export CONDA_SEPARATE_SOLVERS=true
+        export PYTHONDONTWRITEBYTECODE=1
+        export PYTHONUNBUFFERED=1
+
+        # Run micromamba with isolated environment
+        /bin/micromamba run -n microscopy_env $CELLPOSE_CMD
+    "
 
 EXIT_CODE=$?
 
@@ -370,6 +431,14 @@ if [ $EXIT_CODE -eq 0 ]; then
 fi
 
 # ==========================================
+# CLEANUP ISOLATED ENVIRONMENT
+# ==========================================
+echo "=========================================="
+echo "Cleaning up isolated temporary directory: $JOB_TEMP_DIR"
+rm -rf "$JOB_TEMP_DIR"
+echo "Cleanup complete"
+
+# ==========================================
 # COMPLETION
 # ==========================================
 echo "=========================================="
@@ -388,13 +457,6 @@ fi
 
 echo "End time: $(date)"
 echo "Elapsed time: ${ELAPSED_TIME} seconds"
-
-# Clean up job-specific temporary directory
-if [ -d "$JOB_TEMP_DIR" ]; then
-    echo "Cleaning up temporary directory: $JOB_TEMP_DIR"
-    rm -rf "$JOB_TEMP_DIR"
-fi
-
 echo "=========================================="
 
 exit $EXIT_CODE
