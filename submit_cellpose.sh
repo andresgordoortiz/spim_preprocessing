@@ -348,7 +348,6 @@ MODEL_DIR=$(dirname "$MODEL")
 # Export cache isolation variables to container
 # Use APPTAINERENV_ prefix (modern Singularity/Apptainer)
 export APPTAINERENV_CONDA_PKGS_DIRS="$CONDA_PKGS_DIRS"
-export APPTAINERENV_MAMBA_ROOT_PREFIX="$MAMBA_ROOT_PREFIX"
 export APPTAINERENV_MAMBA_PKGS_DIRS="$MAMBA_PKGS_DIRS"
 export APPTAINERENV_CONDA_NO_PLUGINS="true"
 export APPTAINERENV_PYTHONDONTWRITEBYTECODE="1"
@@ -364,8 +363,8 @@ singularity exec --nv \
     "$CONTAINER_IMAGE" \
     /bin/bash -c "
         # Set cache isolation variables inside container
+        # Only redirect package cache, not environment lookup
         export CONDA_PKGS_DIRS='$CONDA_PKGS_DIRS'
-        export MAMBA_ROOT_PREFIX='$MAMBA_ROOT_PREFIX'
         export MAMBA_PKGS_DIRS='$MAMBA_PKGS_DIRS'
         export CONDA_NO_PLUGINS=true
         export PYTHONDONTWRITEBYTECODE=1
