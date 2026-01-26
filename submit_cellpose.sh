@@ -227,7 +227,6 @@ Flow threshold: $FLOW_THRESHOLD
 Cell probability threshold: $CELLPROB_THRESHOLD
 Use GPU: $USE_GPU
 3D Mode: $DO_3D
-Save outlines (PNG): $SAVE_OUTLINES
 Save flows: $SAVE_FLOWS
 Save NPY masks: $SAVE_NPY
 
