@@ -225,8 +225,6 @@ Model: $MODEL
 Diameter: $DIAMETER pixels
 Flow threshold: $FLOW_THRESHOLD
 Cell probability threshold: $CELLPROB_THRESHOLD
-Channel (cytoplasm): $CHAN
-Channel (nucleus): $CHAN2
 Use GPU: $USE_GPU
 3D Mode: $DO_3D
 Save outlines (PNG): $SAVE_OUTLINES
