@@ -312,12 +312,9 @@ echo "$CELLPOSE_CMD" >> "$PARAM_LOG"
 # ==========================================
 echo "Starting Cellpose segmentation..."
 
-<<<<<<< HEAD
 START_TIME=$SECONDS
-=======
 # Bind both input directory, output directory, and model directory
 MODEL_DIR=$(dirname "$MODEL")
->>>>>>> 750a5333a9fe08ed217e44bf5116e0b4c99bf288
 
 singularity exec --nv \
     -B "$INPUT_DIR" \
