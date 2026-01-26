@@ -173,7 +173,12 @@ fi
 INPUT_FILE="${FILES[$SLURM_ARRAY_TASK_ID]}"
 FILENAME=$(basename "$INPUT_FILE")
 
+# Get base filename without extension (for output naming)
+BASE_NAME=$(basename "$FILENAME" .tif)
+BASE_NAME=$(basename "$BASE_NAME" .tiff)
+
 echo "Processing file: $FILENAME"
+echo "Base name: $BASE_NAME"
 echo "Input path: $INPUT_FILE"
 echo "Output directory: $OUTPUT_DIR"
 echo "Container: $CONTAINER_IMAGE"
@@ -193,6 +198,69 @@ echo "  3D Mode: $DO_3D"
 echo "  Save outlines (PNG): $SAVE_OUTLINES"
 echo "  Save flows: $SAVE_FLOWS"
 echo "  Save NPY masks: $SAVE_NPY"
+echo "=========================================="
+
+# ==========================================
+# CREATE PARAMETER LOG FILE
+# ==========================================
+PARAM_LOG="${OUTPUT_DIR}/${BASE_NAME}_parameters.txt"
+
+echo "Creating parameter log: $PARAM_LOG"
+
+cat > "$PARAM_LOG" << EOF
+Cellpose Segmentation Parameters
+=================================
+Processed: $(date)
+Job ID: ${SLURM_ARRAY_JOB_ID}_${SLURM_ARRAY_TASK_ID}
+Node: $SLURM_NODELIST
+
+Input File
+----------
+Filename: $FILENAME
+Base name: $BASE_NAME
+Full path: $INPUT_FILE
+
+Output Files
+------------
+Output directory: $OUTPUT_DIR
+Mask file: ${BASE_NAME}_Cellseg.tif
+Parameter log: ${BASE_NAME}_parameters.txt
+
+Cellpose Parameters
+-------------------
+Model: $MODEL
+Diameter: $DIAMETER pixels
+Flow threshold: $FLOW_THRESHOLD
+Cell probability threshold: $CELLPROB_THRESHOLD
+Channel (cytoplasm): $CHAN
+Channel (nucleus): $CHAN2
+Use GPU: $USE_GPU
+3D Mode: $DO_3D
+Save outlines (PNG): $SAVE_OUTLINES
+Save flows: $SAVE_FLOWS
+Save NPY masks: $SAVE_NPY
+
+Container
+---------
+Image: $CONTAINER_IMAGE
+
+System Information
+------------------
+Hostname: $(hostname)
+CPUs per task: $SLURM_CPUS_PER_TASK
+Memory: 64G
+Time limit: 02:00:00
+EOF
+
+# Append GPU info if available
+if command -v nvidia-smi &> /dev/null; then
+    echo "" >> "$PARAM_LOG"
+    echo "GPU Information" >> "$PARAM_LOG"
+    echo "---------------" >> "$PARAM_LOG"
+    nvidia-smi --query-gpu=name,memory.total,driver_version --format=csv,noheader >> "$PARAM_LOG" 2>&1
+fi
+
+echo "Parameter log created successfully"
 echo "=========================================="
 
 # ==========================================
@@ -241,10 +309,18 @@ echo "Cellpose command:"
 echo "$CELLPOSE_CMD"
 echo "=========================================="
 
+# Append command to parameter log
+echo "" >> "$PARAM_LOG"
+echo "Command Executed" >> "$PARAM_LOG"
+echo "----------------" >> "$PARAM_LOG"
+echo "$CELLPOSE_CMD" >> "$PARAM_LOG"
+
 # ==========================================
 # SINGULARITY EXECUTION
 # ==========================================
 echo "Starting Cellpose segmentation..."
+
+START_TIME=$SECONDS
 
 singularity exec --nv \
     -B "$INPUT_DIR" \
@@ -255,14 +331,13 @@ singularity exec --nv \
 
 EXIT_CODE=$?
 
+END_TIME=$SECONDS
+ELAPSED_TIME=$((END_TIME - START_TIME))
+
 # ==========================================
 # RENAME OUTPUT TO MATCH IMAGEJ CONVENTION
 # ==========================================
 if [ $EXIT_CODE -eq 0 ]; then
-    # Get base filename without extension
-    BASE_NAME=$(basename "$FILENAME" .tif)
-    BASE_NAME=$(basename "$BASE_NAME" .tiff)
-
     # Cellpose default output: {basename}_cp_masks.tif
     # ImageJ output: {basename}_Cellseg.tif
     CELLPOSE_OUTPUT="${OUTPUT_DIR}/${BASE_NAME}_cp_masks.tif"
@@ -276,24 +351,42 @@ if [ $EXIT_CODE -eq 0 ]; then
 fi
 
 # ==========================================
+# UPDATE PARAMETER LOG WITH RESULTS
+# ==========================================
+echo "" >> "$PARAM_LOG"
+echo "Execution Results" >> "$PARAM_LOG"
+echo "-----------------" >> "$PARAM_LOG"
+echo "Exit code: $EXIT_CODE" >> "$PARAM_LOG"
+echo "Status: $([ $EXIT_CODE -eq 0 ] && echo 'SUCCESS' || echo 'FAILED')" >> "$PARAM_LOG"
+echo "Elapsed time: ${ELAPSED_TIME} seconds" >> "$PARAM_LOG"
+echo "End time: $(date)" >> "$PARAM_LOG"
+
+if [ $EXIT_CODE -eq 0 ]; then
+    echo "" >> "$PARAM_LOG"
+    echo "Output Files Generated" >> "$PARAM_LOG"
+    echo "----------------------" >> "$PARAM_LOG"
+    ls -lh "$OUTPUT_DIR"/${BASE_NAME}* 2>/dev/null | awk '{print $9, "(" $5 ")"}' >> "$PARAM_LOG" || echo "No output files found" >> "$PARAM_LOG"
+fi
+
+# ==========================================
 # COMPLETION
 # ==========================================
 echo "=========================================="
 if [ $EXIT_CODE -eq 0 ]; then
     echo "Segmentation completed successfully!"
     echo "Output saved to: $OUTPUT_DIR"
+    echo "Parameter log: $PARAM_LOG"
 
     # List output files for this image
-    echo "Output files for $FILENAME:"
-    BASE_NAME=$(basename "$FILENAME" .tif)
-    BASE_NAME=$(basename "$BASE_NAME" .tiff)
+    echo "Output files for $BASE_NAME:"
     ls -lh "$OUTPUT_DIR"/${BASE_NAME}* 2>/dev/null || echo "  No output files found"
 else
     echo "ERROR: Segmentation failed with exit code $EXIT_CODE"
+    echo "Check parameter log for details: $PARAM_LOG"
 fi
 
 echo "End time: $(date)"
-echo "Elapsed time: $SECONDS seconds"
+echo "Elapsed time: ${ELAPSED_TIME} seconds"
 echo "=========================================="
 
 exit $EXIT_CODE
