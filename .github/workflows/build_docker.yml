@@ -4,9 +4,15 @@ on:
   push:
     branches:
       - main  # Adjust this if you use 'master'
+    paths:
+      - '.github/workflows/build_docker.yml'
+      - 'Dockerfile'
   pull_request:
     branches:
       - main
+    paths:
+      - '.github/workflows/build_docker.yml'
+      - 'Dockerfile'
 
 env:
   REGISTRY: ghcr.io
