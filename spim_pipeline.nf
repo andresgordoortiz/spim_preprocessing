@@ -2,16 +2,16 @@
 
 /*
  * ============================================================================
- * SPIM 4D Image Processing Pipeline
+ * SPIM 4D Image Processing Pipeline - CORRECTED VERSION
  * ============================================================================
  *
  * This pipeline processes 4D SPIM images through:
- * 1. Preprocessing and deconvolution
- * 2. Cellpose segmentation
- * 3. TrackMate tracking
+ * 1. File parsing with timepoint extraction (t0051_Channel 1.tif format)
+ * 2. Preprocessing and deconvolution per timepoint
+ * 3. Cellpose segmentation per timepoint
+ * 4. Merging all timepoints into a single 4D hyperstack with preserved metadata
  *
  * All parameters are loaded from a JSON configuration file for reproducibility.
- * Metadata is preserved throughout the pipeline for TrackMate compatibility.
  */
 
 nextflow.enable.dsl=2
@@ -23,6 +23,7 @@ nextflow.enable.dsl=2
 params.input_dir = null
 params.output_dir = null
 params.config_json = null
+params.channel = 1
 params.container = "docker://ghcr.io/andresgordoortiz/spim_preprocessing:sha-8720eea"
 params.help = false
 
@@ -34,36 +35,39 @@ if (params.help) {
     ============================================================================
 
     Usage:
-        nextflow run spim_pipeline.nf \\
+        nextflow run spim_pipeline_fixed.nf \\
             --input_dir <path> \\
             --output_dir <path> \\
             --config_json <path> \\
             [options]
 
     Required Arguments:
-        --input_dir         Directory containing input 4D TIFF images
+        --input_dir         Directory containing input timepoint TIFF images
+                           (format: t0001_Channel 1.tif, t0002_Channel 1.tif, etc.)
         --output_dir        Directory for all pipeline outputs
         --config_json       JSON file with processing parameters
 
     Optional Arguments:
-        --container         Singularity/Docker container image
-                           (default: docker://ghcr.io/andresgordoortiz/spim_preprocessing:sha-8720eea)
-        --help             Show this help message
+        --channel          Channel number to process (default: 1)
+        --container        Singularity/Docker container image
+                          (default: docker://ghcr.io/andresgordoortiz/spim_preprocessing:sha-8720eea)
+        --help            Show this help message
 
     Output Structure:
         output_dir/
-        ├── 01_preprocessed/     - Preprocessed & deconvolved images
-        ├── 02_segmented/        - Cellpose segmentation masks
-        ├── 03_tracked/          - TrackMate tracking results
+        ├── 01_preprocessed/     - Preprocessed & deconvolved images per timepoint
+        ├── 02_segmented/        - Cellpose segmentation masks per timepoint
+        ├── 03_hyperstack/       - Final 4D merged hyperstack with metadata
         ├── metadata/            - Preserved metadata files
         ├── logs/                - Processing logs
-        └── reports/             - QC reports and visualizations
+        └── reports/             - QC reports
 
     Example:
-        nextflow run spim_pipeline.nf \\
+        nextflow run spim_pipeline_fixed.nf \\
             --input_dir /data/raw_images \\
             --output_dir /data/processed \\
-            --config_json config.json
+            --config_json config.json \\
+            --channel 1
 
     ============================================================================
     """.stripIndent()
@@ -95,17 +99,19 @@ config = loadConfig(params.config_json)
 
 log.info """
 ============================================================================
-SPIM 4D Image Processing Pipeline
+SPIM 4D Image Processing Pipeline - CORRECTED
 ============================================================================
 Input directory    : ${params.input_dir}
 Output directory   : ${params.output_dir}
 Configuration      : ${params.config_json}
+Channel to process : ${params.channel}
 Container          : ${params.container}
 
 Pipeline steps:
-  1. Preprocessing & Deconvolution
-  2. Cellpose Segmentation
-  3. TrackMate Tracking
+  1. Parse and sort timepoint files
+  2. Preprocessing & Deconvolution per timepoint
+  3. Cellpose Segmentation per timepoint
+  4. Merge into 4D hyperstack with preserved metadata
 
 Started at: ${new Date()}
 ============================================================================
@@ -116,18 +122,17 @@ Started at: ${new Date()}
 // ============================================================================
 
 process EXTRACT_METADATA {
-    tag "${image_file.baseName}"
+    tag "t${String.format('%04d', timepoint)}"
 
     publishDir "${params.output_dir}/metadata",
         mode: 'copy',
         pattern: "*.json"
 
     input:
-    path image_file
+    tuple val(timepoint), path(image_file)
 
     output:
-    tuple path(image_file), path("${image_file.baseName}_metadata.json"), emit: with_metadata
-    path "${image_file.baseName}_metadata.json", emit: metadata_only
+    tuple val(timepoint), path(image_file), path("t${String.format('%04d', timepoint)}_metadata.json"), emit: with_metadata
 
     container params.container
 
@@ -138,6 +143,8 @@ process EXTRACT_METADATA {
     import tifffile
     import numpy as np
     from pathlib import Path
+
+    print(f"Extracting metadata from: ${image_file}")
 
     # Read TIFF metadata
     with tifffile.TiffFile('${image_file}') as tif:
@@ -148,10 +155,8 @@ process EXTRACT_METADATA {
             metadata['imagej'] = {
                 'spacing': tif.imagej_metadata.get('spacing', 1.0),
                 'unit': tif.imagej_metadata.get('unit', 'micron'),
-                'axes': tif.imagej_metadata.get('axes', 'TZYX'),
-                'frames': tif.imagej_metadata.get('frames', 1),
-                'slices': tif.imagej_metadata.get('slices', 1),
-                'channels': tif.imagej_metadata.get('channels', 1),
+                'axes': tif.imagej_metadata.get('axes', 'ZYX'),
+                'slices': tif.imagej_metadata.get('slices', tif.series[0].shape[0]),
             }
 
         # TIFF tags from first page
@@ -161,19 +166,19 @@ process EXTRACT_METADATA {
         # Extract resolution
         if 'XResolution' in tags:
             x_num, x_denom = tags['XResolution'].value
-            metadata['x_resolution_um'] = x_denom / x_num
+            metadata['x_resolution_um'] = x_denom / x_num if x_num != 0 else 1.0
         else:
             metadata['x_resolution_um'] = 1.0
 
         if 'YResolution' in tags:
             y_num, y_denom = tags['YResolution'].value
-            metadata['y_resolution_um'] = y_denom / y_num
+            metadata['y_resolution_um'] = y_denom / y_num if y_num != 0 else 1.0
         else:
             metadata['y_resolution_um'] = 1.0
 
         # Image dimensions
         metadata['shape'] = {
-            'axes': 'TZYX' if len(tif.series[0].shape) == 4 else 'ZYX',
+            'axes': 'ZYX',
             'dimensions': list(tif.series[0].shape)
         }
 
@@ -184,102 +189,16 @@ process EXTRACT_METADATA {
         if 'Software' in tags:
             metadata['software'] = tags['Software'].value
 
+        # Timepoint
+        metadata['timepoint'] = ${timepoint}
+
     # Save metadata
-    with open('${image_file.baseName}_metadata.json', 'w') as f:
+    output_file = f"t{${timepoint}:04d}_metadata.json"
+    with open(output_file, 'w') as f:
         json.dump(metadata, f, indent=2)
 
-    print(f"Extracted metadata for ${image_file.baseName}")
+    print(f"Metadata saved to: {output_file}")
     print(json.dumps(metadata, indent=2))
-    """
-}
-
-// ============================================================================
-// PROCESS: Split 4D Image into Timepoints
-// ============================================================================
-
-process SPLIT_TIMEPOINTS {
-    tag "${image_file.baseName}"
-
-    publishDir "${params.output_dir}/01_preprocessed/timepoints",
-        mode: 'copy',
-        pattern: "*_t*.tif"
-
-    input:
-    tuple path(image_file), path(metadata_json)
-
-    output:
-    tuple val("${image_file.baseName}"),
-          path("${image_file.baseName}_t*.tif"),
-          path(metadata_json), emit: timepoints
-
-    container params.container
-
-    script:
-    """
-    #!/usr/bin/env python3
-    import tifffile
-    import numpy as np
-    import json
-    from pathlib import Path
-
-    print("Loading image: ${image_file}")
-    img = tifffile.imread('${image_file}')
-
-    print(f"Image shape: {img.shape}")
-    print(f"Image dtype: {img.dtype}")
-
-    # Load metadata
-    with open('${metadata_json}', 'r') as f:
-        metadata = json.load(f)
-
-    # Determine if 4D (TZYX) or 3D (ZYX)
-    if img.ndim == 4:
-        print(f"Processing 4D image with {img.shape[0]} timepoints")
-        n_timepoints = img.shape[0]
-
-        for t in range(n_timepoints):
-            timepoint_img = img[t]
-            output_name = f"${image_file.baseName}_t{t:04d}.tif"
-
-            # Save with metadata preservation
-            tifffile.imwrite(
-                output_name,
-                timepoint_img,
-                imagej=True,
-                resolution=(1.0/metadata['x_resolution_um'],
-                           1.0/metadata['y_resolution_um']),
-                metadata={
-                    'spacing': metadata['imagej']['spacing'] if 'imagej' in metadata else 1.0,
-                    'unit': 'um',
-                    'axes': 'ZYX',
-                    'TimePoint': t
-                }
-            )
-            print(f"  Saved timepoint {t}: {output_name}")
-
-    elif img.ndim == 3:
-        print("Processing 3D image (single timepoint)")
-        output_name = f"${image_file.baseName}_t0000.tif"
-
-        tifffile.imwrite(
-            output_name,
-            img,
-            imagej=True,
-            resolution=(1.0/metadata['x_resolution_um'],
-                       1.0/metadata['y_resolution_um']),
-            metadata={
-                'spacing': metadata['imagej']['spacing'] if 'imagej' in metadata else 1.0,
-                'unit': 'um',
-                'axes': 'ZYX',
-                'TimePoint': 0
-            }
-        )
-        print(f"  Saved single timepoint: {output_name}")
-
-    else:
-        raise ValueError(f"Unsupported image dimensions: {img.ndim}D")
-
-    print("Timepoint splitting completed")
     """
 }
 
@@ -288,9 +207,9 @@ process SPLIT_TIMEPOINTS {
 // ============================================================================
 
 process PREPROCESS_DECONVOLVE {
-    tag "${series_name}_${timepoint_file.baseName}"
+    tag "t${String.format('%04d', timepoint)}"
 
-    publishDir "${params.output_dir}/01_preprocessed/processed",
+    publishDir "${params.output_dir}/01_preprocessed",
         mode: 'copy',
         pattern: "*_processed.tif"
 
@@ -301,25 +220,23 @@ process PREPROCESS_DECONVOLVE {
     container params.container
 
     input:
-    tuple val(series_name),
-          path(timepoint_file),
-          path(metadata_json)
+    tuple val(timepoint), path(image_file), path(metadata_json)
     val preprocess_config
 
     output:
-    tuple val(series_name),
-          path("${timepoint_file.baseName}_processed.tif"),
-          path(metadata_json), emit: processed
-    path "${timepoint_file.baseName}_preprocess.log", emit: log
+    tuple val(timepoint), path("t${String.format('%04d', timepoint)}_processed.tif"), path(metadata_json), emit: processed
+    path "t${String.format('%04d', timepoint)}_preprocess.log", emit: log
 
     script:
     def cfg = preprocess_config
+    def t_formatted = String.format('%04d', timepoint)
     """
     #!/bin/bash
     set -euo pipefail
 
     echo "============================================"
-    echo "Preprocessing: ${timepoint_file.baseName}"
+    echo "Preprocessing timepoint: ${timepoint}"
+    echo "File: ${image_file}"
     echo "============================================"
 
     # Run preprocessing with all parameters from config
@@ -327,6 +244,7 @@ process PREPROCESS_DECONVOLVE {
 import json
 import sys
 import os
+import subprocess
 
 # Load metadata
 with open('${metadata_json}', 'r') as f:
@@ -335,43 +253,42 @@ with open('${metadata_json}', 'r') as f:
 # Load config
 config = ${groovy.json.JsonOutput.toJson(cfg)}
 
-# Build command
+# Build command for preprocessing script
 cmd = [
     'python', 'spim_pipeline_fixed.py',
-    '--input_file', '${timepoint_file}',
+    '--input_file', '${image_file}',
     '--outdir', '.',
     '--psf_path', config['psf_path'],
     '--image_scaling', str(config['image_scaling']),
-    '--niter', str(config['niter']),
-    '--niterz', str(config['niterz']),
-    '--percentile_low', str(config['percentile_low']),
-    '--percentile_high', str(config['percentile_high']),
-    '--sigma', str(config['sigma']),
-    '--min_v', str(config['min_v']),
-    '--max_v', str(config['max_v']),
-    '--resolution_px0', str(config['resolution_px0']),
-    '--resolution_pz0', str(config['resolution_pz0']),
-    '--noise_lvl', str(config['noise_lvl']),
-    '--padding', str(config['padding'])
+    '--niter', str(config['deconvolution']['niter']),
+    '--niterz', str(config['deconvolution']['niterz']),
+    '--percentile_low', str(config['normalization']['percentile_low']),
+    '--percentile_high', str(config['normalization']['percentile_high']),
+    '--sigma', str(config['postprocessing']['sigma']),
+    '--min_v', str(config['normalization']['min_v']),
+    '--max_v', str(config['normalization']['max_v']),
+    '--resolution_px0', str(config['background_subtraction']['resolution_px0']),
+    '--resolution_pz0', str(config['background_subtraction']['resolution_pz0']),
+    '--noise_lvl', str(config['background_subtraction']['noise_lvl']),
+    '--padding', str(config['deconvolution']['padding'])
 ]
 
-# Add optional flags
-if config.get('no_clahe', False):
+# Add optional flags from correction_flags
+if config['correction_flags'].get('no_clahe', False):
     cmd.append('--no_clahe')
-if config.get('no_z_correction', False):
+if config['correction_flags'].get('no_z_correction', False):
     cmd.append('--no_z_correction')
-if config.get('no_shading', False):
+if config['correction_flags'].get('no_shading', False):
     cmd.append('--no_shading')
 
-print("Command:", ' '.join(cmd))
-print("\\n" + "="*50)
+print("Preprocessing command:", ' '.join(cmd))
+print("\\n" + "="*60)
 
 # Execute
-import subprocess
 result = subprocess.run(cmd, capture_output=True, text=True)
 
 # Save log
-with open('${timepoint_file.baseName}_preprocess.log', 'w') as f:
+with open('t${t_formatted}_preprocess.log', 'w') as f:
     f.write("STDOUT:\\n")
     f.write(result.stdout)
     f.write("\\n\\nSTDERR:\\n")
@@ -381,20 +298,25 @@ print(result.stdout)
 if result.stderr:
     print("STDERR:", result.stderr, file=sys.stderr)
 
-sys.exit(result.returncode)
+if result.returncode != 0:
+    print(f"ERROR: Preprocessing failed with exit code {result.returncode}")
+    sys.exit(result.returncode)
 PYTHON_EOF
 
-    # Rename output to standard format
-    ORIGINAL_OUTPUT=\$(ls *_${cfg.image_scaling.toString().replace('.', '')}*.tif 2>/dev/null | head -1)
+    # Find and rename output to standard format
+    SCALING_STR=\$(echo "${cfg.image_scaling}" | sed 's/\\.//g')
+    ORIGINAL_OUTPUT=\$(ls *_\${SCALING_STR}*.tif 2>/dev/null | head -1)
+
     if [ -n "\$ORIGINAL_OUTPUT" ]; then
-        mv "\$ORIGINAL_OUTPUT" "${timepoint_file.baseName}_processed.tif"
-        echo "Renamed output to: ${timepoint_file.baseName}_processed.tif"
+        mv "\$ORIGINAL_OUTPUT" "t${t_formatted}_processed.tif"
+        echo "Renamed output to: t${t_formatted}_processed.tif"
     else
         echo "ERROR: No processed output found"
+        ls -lh
         exit 1
     fi
 
-    # Restore metadata to processed image
+    # Restore and update metadata to processed image
     python3 << 'RESTORE_META'
 import tifffile
 import json
@@ -404,7 +326,7 @@ with open('${metadata_json}', 'r') as f:
     metadata = json.load(f)
 
 # Load processed image
-img = tifffile.imread('${timepoint_file.baseName}_processed.tif')
+img = tifffile.imread('t${t_formatted}_processed.tif')
 
 # Recalculate voxel sizes after scaling
 x_res = metadata['x_resolution_um'] / ${cfg.image_scaling}
@@ -413,7 +335,7 @@ z_spacing = metadata['imagej']['spacing'] if 'imagej' in metadata else 1.0
 
 # Re-save with preserved metadata
 tifffile.imwrite(
-    '${timepoint_file.baseName}_processed.tif',
+    't${t_formatted}_processed.tif',
     img,
     imagej=True,
     resolution=(1.0/x_res, 1.0/y_res),
@@ -421,14 +343,17 @@ tifffile.imwrite(
         'spacing': z_spacing,
         'unit': 'um',
         'axes': 'ZYX',
-        'TimePoint': metadata['imagej'].get('TimePoint', 0) if 'imagej' in metadata else 0
+        'TimePoint': ${timepoint}
     }
 )
 
-print(f"Metadata restored: X={x_res:.4f} um, Y={y_res:.4f} um, Z={z_spacing:.4f} um")
+print(f"Metadata restored for timepoint ${timepoint}:")
+print(f"  X resolution: {x_res:.4f} um")
+print(f"  Y resolution: {y_res:.4f} um")
+print(f"  Z spacing: {z_spacing:.4f} um")
 RESTORE_META
 
-    echo "Preprocessing completed: ${timepoint_file.baseName}_processed.tif"
+    echo "Preprocessing completed for timepoint ${timepoint}"
     """
 }
 
@@ -437,11 +362,11 @@ RESTORE_META
 // ============================================================================
 
 process CELLPOSE_SEGMENT {
-    tag "${series_name}_${processed_file.baseName}"
+    tag "t${String.format('%04d', timepoint)}"
 
     publishDir "${params.output_dir}/02_segmented",
         mode: 'copy',
-        pattern: "*_Cellseg.tif"
+        pattern: "*_segmented.tif"
 
     publishDir "${params.output_dir}/logs/segmentation",
         mode: 'copy',
@@ -450,25 +375,23 @@ process CELLPOSE_SEGMENT {
     container params.container
 
     input:
-    tuple val(series_name),
-          path(processed_file),
-          path(metadata_json)
+    tuple val(timepoint), path(processed_file), path(metadata_json)
     val segment_config
 
     output:
-    tuple val(series_name),
-          path("${processed_file.baseName}_Cellseg.tif"),
-          path(metadata_json), emit: segmented
-    path "${processed_file.baseName}_segment.log", emit: log
+    tuple val(timepoint), path("t${String.format('%04d', timepoint)}_segmented.tif"), path(metadata_json), emit: segmented
+    path "t${String.format('%04d', timepoint)}_segment.log", emit: log
 
     script:
     def cfg = segment_config
+    def t_formatted = String.format('%04d', timepoint)
     """
     #!/bin/bash
     set -euo pipefail
 
     echo "============================================"
-    echo "Segmentation: ${processed_file.baseName}"
+    echo "Segmentation timepoint: ${timepoint}"
+    echo "File: ${processed_file}"
     echo "============================================"
 
     # Build Cellpose command
@@ -487,19 +410,18 @@ process CELLPOSE_SEGMENT {
 
     CELLPOSE_CMD+=" --verbose"
 
-    echo "Running: \$CELLPOSE_CMD"
+    echo "Running Cellpose: \$CELLPOSE_CMD"
     echo ""
 
     # Run Cellpose and capture output
-    \$CELLPOSE_CMD 2>&1 | tee ${processed_file.baseName}_segment.log
+    \$CELLPOSE_CMD 2>&1 | tee t${t_formatted}_segment.log
 
-    # Rename output to include diameter (matching ImageJ convention)
-    CELLPOSE_OUTPUT="${processed_file.baseName}_cp_masks.tif"
-    FINAL_OUTPUT="${processed_file.baseName}_diam${cfg.diameter}_Cellseg.tif"
+    # Find and rename Cellpose output
+    CELLPOSE_OUTPUT=\$(ls *_cp_masks.tif 2>/dev/null | head -1)
 
     if [ -f "\$CELLPOSE_OUTPUT" ]; then
-        mv "\$CELLPOSE_OUTPUT" "\$FINAL_OUTPUT"
-        echo "Renamed: \$CELLPOSE_OUTPUT -> \$FINAL_OUTPUT"
+        mv "\$CELLPOSE_OUTPUT" "t${t_formatted}_segmented.tif"
+        echo "Renamed: \$CELLPOSE_OUTPUT -> t${t_formatted}_segmented.tif"
 
         # Preserve metadata in segmentation mask
         python3 << 'PRESERVE_MASK_META'
@@ -512,15 +434,16 @@ with open('${metadata_json}', 'r') as f:
     metadata = json.load(f)
 
 # Load mask
-mask = tifffile.imread("\$FINAL_OUTPUT")
+mask = tifffile.imread("t${t_formatted}_segmented.tif")
 
-# Re-save with metadata
-x_res = metadata['x_resolution_um'] / ${cfg.get('image_scaling', 1.0)}
-y_res = metadata['y_resolution_um'] / ${cfg.get('image_scaling', 1.0)}
+# Calculate voxel sizes (accounting for preprocessing scaling)
+x_res = metadata['x_resolution_um'] / ${cfg.image_scaling}
+y_res = metadata['y_resolution_um'] / ${cfg.image_scaling}
 z_spacing = metadata['imagej']['spacing'] if 'imagej' in metadata else 1.0
 
+# Re-save with metadata
 tifffile.imwrite(
-    "\$FINAL_OUTPUT",
+    "t${t_formatted}_segmented.tif",
     mask.astype(np.uint16),
     imagej=True,
     resolution=(1.0/x_res, 1.0/y_res),
@@ -528,43 +451,40 @@ tifffile.imwrite(
         'spacing': z_spacing,
         'unit': 'um',
         'axes': 'ZYX',
-        'TimePoint': metadata['imagej'].get('TimePoint', 0) if 'imagej' in metadata else 0,
+        'TimePoint': ${timepoint},
         'LabelImage': True
     }
 )
-print(f"Metadata preserved in segmentation mask")
+print(f"Metadata preserved in segmentation mask for timepoint ${timepoint}")
 PRESERVE_MASK_META
 
     else
-        echo "ERROR: Cellpose output not found: \$CELLPOSE_OUTPUT"
+        echo "ERROR: Cellpose output not found"
         ls -lh
         exit 1
     fi
 
-    echo "Segmentation completed: \$FINAL_OUTPUT"
+    echo "Segmentation completed for timepoint ${timepoint}"
     """
 }
 
 // ============================================================================
-// PROCESS: Merge Timepoints for Tracking
+// PROCESS: Merge All Timepoints into 4D Hyperstack
 // ============================================================================
 
-process MERGE_TIMEPOINTS {
-    tag "${series_name}"
+process MERGE_TO_HYPERSTACK {
+    tag "Creating 4D hyperstack"
 
-    publishDir "${params.output_dir}/02_segmented/timeseries",
-        mode: 'copy',
-        pattern: "*_4D.tif"
+    publishDir "${params.output_dir}/03_hyperstack",
+        mode: 'copy'
 
     input:
-    tuple val(series_name),
-          path(segmented_files),
-          path(metadata_json)
+    path all_segmented_files
+    path all_metadata_files
 
     output:
-    tuple val(series_name),
-          path("${series_name}_4D.tif"),
-          path(metadata_json), emit: merged_4d
+    path "4D_hyperstack.tif", emit: hyperstack
+    path "4D_hyperstack_metadata.json", emit: metadata
 
     container params.container
 
@@ -577,49 +497,97 @@ process MERGE_TIMEPOINTS {
     from pathlib import Path
     import re
 
-    print("Merging timepoints for: ${series_name}")
+    print("="*60)
+    print("Merging all timepoints into 4D hyperstack")
+    print("="*60)
 
-    # Load metadata
-    with open('${metadata_json}', 'r') as f:
-        metadata = json.load(f)
-
-    # Get all segmented files and sort by timepoint
-    seg_files = sorted(Path('.').glob('*_Cellseg.tif'))
+    # Get all segmented files and sort by timepoint number
+    seg_files = sorted(Path('.').glob('t*_segmented.tif'))
 
     if not seg_files:
         raise ValueError("No segmented files found!")
 
-    print(f"Found {len(seg_files)} timepoints")
+    print(f"Found {len(seg_files)} timepoint files")
 
     # Extract timepoint numbers and sort
-    timepoint_files = []
+    timepoint_data = []
     for f in seg_files:
-        match = re.search(r't(\\d+)', f.name)
+        match = re.search(r't(\\d+)_segmented\\.tif', f.name)
         if match:
             t = int(match.group(1))
-            timepoint_files.append((t, f))
+            timepoint_data.append((t, f))
+        else:
+            print(f"Warning: Could not extract timepoint from {f.name}")
 
-    timepoint_files.sort(key=lambda x: x[0])
+    timepoint_data.sort(key=lambda x: x[0])
+
+    # Load first image to get reference metadata
+    first_metadata_file = sorted(Path('.').glob('t*_metadata.json'))[0]
+    with open(first_metadata_file, 'r') as f:
+        ref_metadata = json.load(f)
 
     # Load all timepoints
     timepoint_arrays = []
-    for t, f in timepoint_files:
+    for t, f in timepoint_data:
         img = tifffile.imread(str(f))
-        print(f"  Loaded t={t:04d}: shape={img.shape}, dtype={img.dtype}")
+        print(f"  Loaded t{t:04d}: shape={img.shape}, dtype={img.dtype}")
+
+        # Ensure 3D (ZYX)
+        if img.ndim != 3:
+            raise ValueError(f"Expected 3D image for t{t:04d}, got {img.ndim}D")
+
         timepoint_arrays.append(img)
+
+    # Verify all timepoints have same shape
+    shapes = [arr.shape for arr in timepoint_arrays]
+    if len(set(shapes)) > 1:
+        raise ValueError(f"Inconsistent shapes across timepoints: {set(shapes)}")
 
     # Stack into 4D array (TZYX)
     img_4d = np.stack(timepoint_arrays, axis=0)
-    print(f"\\nMerged 4D shape: {img_4d.shape}")
+    print(f"\\nMerged 4D shape: {img_4d.shape} (TZYX)")
 
-    # Calculate metadata
-    x_res = metadata['x_resolution_um']
-    y_res = metadata['y_resolution_um']
-    z_spacing = metadata['imagej']['spacing'] if 'imagej' in metadata else 1.0
+    # Calculate metadata (accounting for preprocessing scaling)
+    scaling = ${config.segmentation.image_scaling}
+    x_res = ref_metadata['x_resolution_um'] / scaling
+    y_res = ref_metadata['y_resolution_um'] / scaling
+    z_spacing = ref_metadata['imagej']['spacing'] if 'imagej' in ref_metadata else 1.0
 
-    # Save 4D TIFF with full metadata for TrackMate
+    # Create comprehensive metadata
+    hyperstack_metadata = {
+        'shape': {
+            'axes': 'TZYX',
+            'T': img_4d.shape[0],
+            'Z': img_4d.shape[1],
+            'Y': img_4d.shape[2],
+            'X': img_4d.shape[3]
+        },
+        'voxel_size': {
+            'x_um': x_res,
+            'y_um': y_res,
+            'z_um': z_spacing,
+            'unit': 'um'
+        },
+        'dtype': str(img_4d.dtype),
+        'n_timepoints': img_4d.shape[0],
+        'is_label_image': True,
+        'processing': {
+            'preprocessing_scaling': ${config.preprocessing.image_scaling},
+            'segmentation_scaling': scaling,
+            'cellpose_diameter': ${config.segmentation.diameter},
+            'cellpose_model': '${config.segmentation.model}'
+        },
+        'original_metadata': ref_metadata
+    }
+
+    # Save metadata JSON
+    with open('4D_hyperstack_metadata.json', 'w') as f:
+        json.dump(hyperstack_metadata, f, indent=2)
+
+    # Save 4D TIFF with full ImageJ metadata
+    print("\\nSaving 4D hyperstack...")
     tifffile.imwrite(
-        '${series_name}_4D.tif',
+        '4D_hyperstack.tif',
         img_4d.astype(np.uint16),
         imagej=True,
         resolution=(1.0/x_res, 1.0/y_res),
@@ -633,218 +601,14 @@ process MERGE_TIMEPOINTS {
         }
     )
 
-    print(f"\\nSaved 4D timeseries: ${series_name}_4D.tif")
-    print(f"  Shape: {img_4d.shape} (TZYX)")
-    print(f"  Voxel size: {x_res:.4f} x {y_res:.4f} x {z_spacing:.4f} um")
-    print(f"  Timepoints: {img_4d.shape[0]}")
-    """
-}
-
-// ============================================================================
-// PROCESS: TrackMate Tracking
-// ============================================================================
-
-process TRACKMATE_TRACK {
-    tag "${series_name}"
-
-    publishDir "${params.output_dir}/03_tracked",
-        mode: 'copy'
-
-    publishDir "${params.output_dir}/logs/tracking",
-        mode: 'copy',
-        pattern: "*.log"
-
-    container params.container
-
-    input:
-    tuple val(series_name),
-          path(merged_4d),
-          path(metadata_json)
-    val tracking_config
-
-    output:
-    tuple val(series_name),
-          path("${series_name}_tracks.xml"),
-          path("${series_name}_tracks.csv"), emit: tracks
-    path "${series_name}_tracking.log", emit: log
-
-    script:
-    def cfg = tracking_config
-    """
-    #!/usr/bin/env python3
-    import json
-    import sys
-    import subprocess
-    from pathlib import Path
-
-    print("=" * 60)
-    print(f"TrackMate Tracking: ${series_name}")
-    print("=" * 60)
-
-    # Load metadata
-    with open('${metadata_json}', 'r') as f:
-        metadata = json.load(f)
-
-    # Load tracking config
-    config = ${groovy.json.JsonOutput.toJson(cfg)}
-
-    print("\\nTracking parameters:")
-    for key, value in config.items():
-        print(f"  {key}: {value}")
-    print()
-
-    # Create TrackMate script
-    trackmate_script = '''
-import fiji.plugin.trackmate.Model
-import fiji.plugin.trackmate.Settings
-import fiji.plugin.trackmate.TrackMate
-import fiji.plugin.trackmate.SelectionModel
-import fiji.plugin.trackmate.Logger
-import fiji.plugin.trackmate.detection.LabelImageDetectorFactory
-import fiji.plugin.trackmate.tracking.jaqaman.SparseLAP JaqamanLinkerFactory
-import fiji.plugin.trackmate.io.TmXmlWriter
-import fiji.plugin.trackmate.action.ExportTracksToXML
-import fiji.plugin.trackmate.action.ExportStatsToIJAction
-import ij.IJ
-import ij.ImagePlus
-
-// Load image
-imp = IJ.openImage("${merged_4d}")
-imp.show()
-
-// Create model
-model = new Model()
-
-// Create settings
-settings = new Settings(imp)
-
-// Configure Label Image Detector
-settings.detectorFactory = new LabelImageDetectorFactory()
-settings.detectorSettings = settings.detectorFactory.getDefaultSettings()
-settings.detectorSettings.put('SIMPLIFY_CONTOURS', ${cfg.simplify_contours})
-
-// Configure tracker (Sparse LAP tracker for label images)
-settings.trackerFactory = new SparseLAPJaqamanLinkerFactory()
-settings.trackerSettings = settings.trackerFactory.getDefaultSettings()
-settings.trackerSettings.put('LINKING_MAX_DISTANCE', ${cfg.linking_max_distance})
-settings.trackerSettings.put('GAP_CLOSING_MAX_DISTANCE', ${cfg.gap_closing_max_distance})
-settings.trackerSettings.put('MAX_FRAME_GAP', ${cfg.max_frame_gap})
-settings.trackerSettings.put('ALLOW_GAP_CLOSING', ${cfg.allow_gap_closing})
-settings.trackerSettings.put('ALLOW_TRACK_SPLITTING', ${cfg.allow_track_splitting})
-settings.trackerSettings.put('ALLOW_TRACK_MERGING', ${cfg.allow_track_merging})
-
-// Run TrackMate
-trackmate = new TrackMate(model, settings)
-
-ok = trackmate.checkInput()
-if (!ok) {
-    println("Configuration error: " + trackmate.getErrorMessage())
-    System.exit(1)
-}
-
-ok = trackmate.process()
-if (!ok) {
-    println("Processing error: " + trackmate.getErrorMessage())
-    System.exit(1)
-}
-
-// Export results
-// 1. Save TrackMate XML
-outFile = new File("${series_name}_tracks.xml")
-writer = new TmXmlWriter(outFile)
-writer.appendModel(trackmate.getModel())
-writer.appendSettings(trackmate.getSettings())
-writer.writeToFile()
-println("Saved TrackMate XML: ${series_name}_tracks.xml")
-
-// 2. Export to CSV
-model = trackmate.getModel()
-spots = model.getSpots()
-tracks = model.getTrackModel()
-
-// Create CSV with track data
-csvFile = new File("${series_name}_tracks.csv")
-csvFile.withWriter { writer ->
-    // Header
-    writer.writeLine("TRACK_ID,SPOT_ID,FRAME,POSITION_X,POSITION_Y,POSITION_Z,POSITION_T,RADIUS,QUALITY")
-
-    // Data
-    trackIDs = tracks.trackIDs(true)
-    trackIDs.each { trackID ->
-        track = tracks.trackSpots(trackID)
-        track.each { spot ->
-            writer.writeLine([
-                trackID,
-                spot.ID(),
-                spot.getFeature('FRAME'),
-                spot.getFeature('POSITION_X'),
-                spot.getFeature('POSITION_Y'),
-                spot.getFeature('POSITION_Z'),
-                spot.getFeature('POSITION_T'),
-                spot.getFeature('RADIUS'),
-                spot.getFeature('QUALITY')
-            ].join(','))
-        }
-    }
-}
-println("Saved tracks CSV: ${series_name}_tracks.csv")
-
-// Print summary
-println("\\nTracking completed:")
-println("  Total spots: " + model.getSpots().getNSpots(true))
-println("  Total tracks: " + model.getTrackModel().nTracks(true))
-
-System.exit(0)
-'''
-
-    # Save script
-    with open('trackmate_script.groovy', 'w') as f:
-        f.write(trackmate_script)
-
-    # Run ImageJ/Fiji with TrackMate
-    # Note: This requires ImageJ/Fiji to be available in the container
-    cmd = [
-        'fiji',
-        '--headless',
-        '--console',
-        'trackmate_script.groovy'
-    ]
-
-    print("Running TrackMate...")
-    print(f"Command: {' '.join(cmd)}\\n")
-
-    result = subprocess.run(
-        cmd,
-        capture_output=True,
-        text=True,
-        timeout=3600  # 1 hour timeout
-    )
-
-    # Save log
-    with open('${series_name}_tracking.log', 'w') as f:
-        f.write("STDOUT:\\n")
-        f.write(result.stdout)
-        f.write("\\n\\nSTDERR:\\n")
-        f.write(result.stderr)
-
-    print(result.stdout)
-    if result.stderr:
-        print("STDERR:", result.stderr, file=sys.stderr)
-
-    if result.returncode != 0:
-        print(f"ERROR: TrackMate failed with exit code {result.returncode}")
-        sys.exit(result.returncode)
-
-    # Validate outputs
-    if not Path('${series_name}_tracks.xml').exists():
-        print("ERROR: TrackMate XML not generated")
-        sys.exit(1)
-
-    if not Path('${series_name}_tracks.csv').exists():
-        print("ERROR: Tracks CSV not generated")
-        sys.exit(1)
-
-    print("\\nTracking completed successfully!")
+    print("\\n" + "="*60)
+    print("4D Hyperstack created successfully!")
+    print("="*60)
+    print(f"Shape: {img_4d.shape} (TZYX)")
+    print(f"Voxel size: {x_res:.4f} x {y_res:.4f} x {z_spacing:.4f} um")
+    print(f"Timepoints: {img_4d.shape[0]}")
+    print(f"Z slices per timepoint: {img_4d.shape[1]}")
+    print("="*60)
     """
 }
 
@@ -858,6 +622,7 @@ process GENERATE_QC_REPORT {
 
     input:
     path all_logs
+    path hyperstack_metadata
     path config_json
 
     output:
@@ -873,21 +638,30 @@ process GENERATE_QC_REPORT {
     from pathlib import Path
     from datetime import datetime
 
-    # Collect all log files
-    log_files = list(Path('.').glob('*.log'))
+    # Load hyperstack metadata
+    with open('${hyperstack_metadata}', 'r') as f:
+        hyperstack_meta = json.load(f)
 
     # Load config
     with open('${config_json}', 'r') as f:
         config = json.load(f)
 
+    # Collect all log files
+    preprocess_logs = list(Path('.').glob('*_preprocess.log'))
+    segment_logs = list(Path('.').glob('*_segment.log'))
+
     # Generate summary
     summary = {
-        'pipeline_version': '1.0.0',
+        'pipeline_version': '1.0.0-corrected',
         'execution_date': datetime.now().isoformat(),
+        'input_channel': ${params.channel},
         'configuration': config,
-        'processed_images': len([f for f in log_files if 'preprocess' in f.name]),
-        'segmented_images': len([f for f in log_files if 'segment' in f.name]),
-        'tracked_series': len([f for f in log_files if 'tracking' in f.name])
+        'results': {
+            'n_timepoints_processed': len(preprocess_logs),
+            'n_timepoints_segmented': len(segment_logs),
+            'final_hyperstack_shape': hyperstack_meta['shape'],
+            'voxel_size_um': hyperstack_meta['voxel_size']
+        }
     }
 
     # Save summary JSON
@@ -901,45 +675,92 @@ process GENERATE_QC_REPORT {
 <head>
     <title>SPIM Pipeline Report</title>
     <style>
-        body {{ font-family: Arial, sans-serif; margin: 40px; }}
-        h1 {{ color: #2c3e50; }}
-        h2 {{ color: #34495e; margin-top: 30px; }}
-        table {{ border-collapse: collapse; width: 100%; }}
+        body {{ font-family: Arial, sans-serif; margin: 40px; background-color: #f5f5f5; }}
+        .container {{ max-width: 1200px; margin: 0 auto; background-color: white; padding: 30px; border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }}
+        h1 {{ color: #2c3e50; border-bottom: 3px solid #3498db; padding-bottom: 10px; }}
+        h2 {{ color: #34495e; margin-top: 30px; border-bottom: 2px solid #ecf0f1; padding-bottom: 5px; }}
+        table {{ border-collapse: collapse; width: 100%; margin: 20px 0; }}
         th, td {{ border: 1px solid #ddd; padding: 12px; text-align: left; }}
         th {{ background-color: #3498db; color: white; }}
-        tr:nth-child(even) {{ background-color: #f2f2f2; }}
+        tr:nth-child(even) {{ background-color: #f9f9f9; }}
         .success {{ color: #27ae60; font-weight: bold; }}
-        .info {{ color: #3498db; }}
-        pre {{ background-color: #f4f4f4; padding: 15px; border-radius: 5px; overflow-x: auto; }}
+        .info {{ color: #3498db; font-weight: bold; }}
+        .warning {{ color: #f39c12; }}
+        pre {{ background-color: #f4f4f4; padding: 15px; border-radius: 5px; overflow-x: auto; border-left: 4px solid #3498db; }}
+        .metric {{ background-color: #ecf0f1; padding: 15px; margin: 10px 0; border-radius: 5px; }}
+        .metric-value {{ font-size: 24px; font-weight: bold; color: #2c3e50; }}
+        .metric-label {{ font-size: 14px; color: #7f8c8d; }}
     </style>
 </head>
 <body>
-    <h1>SPIM 4D Image Processing Pipeline Report</h1>
+    <div class="container">
+        <h1>🔬 SPIM 4D Image Processing Pipeline Report</h1>
 
-    <h2>Execution Summary</h2>
-    <table>
-        <tr><th>Parameter</th><th>Value</th></tr>
-        <tr><td>Pipeline Version</td><td>{summary['pipeline_version']}</td></tr>
-        <tr><td>Execution Date</td><td>{summary['execution_date']}</td></tr>
-        <tr><td>Images Preprocessed</td><td class="success">{summary['processed_images']}</td></tr>
-        <tr><td>Images Segmented</td><td class="success">{summary['segmented_images']}</td></tr>
-        <tr><td>Series Tracked</td><td class="success">{summary['tracked_series']}</td></tr>
-    </table>
+        <div class="metric">
+            <div class="metric-value">{hyperstack_meta['n_timepoints']} Timepoints</div>
+            <div class="metric-label">Successfully processed and merged into 4D hyperstack</div>
+        </div>
 
-    <h2>Configuration</h2>
-    <pre>{json.dumps(config, indent=2)}</pre>
+        <h2>📊 Execution Summary</h2>
+        <table>
+            <tr><th>Parameter</th><th>Value</th></tr>
+            <tr><td>Pipeline Version</td><td>{summary['pipeline_version']}</td></tr>
+            <tr><td>Execution Date</td><td>{summary['execution_date']}</td></tr>
+            <tr><td>Input Channel</td><td class="info">{summary['input_channel']}</td></tr>
+            <tr><td>Timepoints Preprocessed</td><td class="success">{summary['results']['n_timepoints_processed']}</td></tr>
+            <tr><td>Timepoints Segmented</td><td class="success">{summary['results']['n_timepoints_segmented']}</td></tr>
+        </table>
 
-    <h2>Processing Steps</h2>
-    <ol>
-        <li><strong>Metadata Extraction</strong> - Preserved original image metadata</li>
-        <li><strong>Timepoint Splitting</strong> - Split 4D images into individual 3D timepoints</li>
-        <li><strong>Preprocessing & Deconvolution</strong> - Applied corrections and deconvolution</li>
-        <li><strong>Cellpose Segmentation</strong> - Detected and labeled cells</li>
-        <li><strong>Timepoint Merging</strong> - Reassembled 4D timeseries</li>
-        <li><strong>TrackMate Tracking</strong> - Tracked cells across time</li>
-    </ol>
+        <h2>🎯 Final Hyperstack Details</h2>
+        <table>
+            <tr><th>Property</th><th>Value</th></tr>
+            <tr><td>Axes Order</td><td class="info">TZYX</td></tr>
+            <tr><td>T (Timepoints)</td><td>{hyperstack_meta['shape']['T']}</td></tr>
+            <tr><td>Z (Slices)</td><td>{hyperstack_meta['shape']['Z']}</td></tr>
+            <tr><td>Y (Height)</td><td>{hyperstack_meta['shape']['Y']}</td></tr>
+            <tr><td>X (Width)</td><td>{hyperstack_meta['shape']['X']}</td></tr>
+            <tr><td>X Resolution</td><td>{hyperstack_meta['voxel_size']['x_um']:.4f} µm</td></tr>
+            <tr><td>Y Resolution</td><td>{hyperstack_meta['voxel_size']['y_um']:.4f} µm</td></tr>
+            <tr><td>Z Spacing</td><td>{hyperstack_meta['voxel_size']['z_um']:.4f} µm</td></tr>
+            <tr><td>Data Type</td><td>{hyperstack_meta['dtype']}</td></tr>
+            <tr><td>Label Image</td><td class="success">Yes (segmentation masks)</td></tr>
+        </table>
 
-    <p><em>Report generated: {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}</em></p>
+        <h2>⚙️ Processing Configuration</h2>
+        <h3>Preprocessing</h3>
+        <pre>{json.dumps(config['preprocessing'], indent=2)}</pre>
+
+        <h3>Segmentation (Cellpose)</h3>
+        <pre>{json.dumps(config['segmentation'], indent=2)}</pre>
+
+        <h2>📋 Pipeline Steps</h2>
+        <ol>
+            <li><strong>File Parsing</strong> - Extracted timepoints from filename pattern (t####_Channel #.tif)</li>
+            <li><strong>Metadata Extraction</strong> - Preserved original image metadata including voxel sizes</li>
+            <li><strong>Preprocessing & Deconvolution</strong> - Applied corrections and deconvolution per timepoint</li>
+            <li><strong>Cellpose Segmentation</strong> - 3D cell segmentation per timepoint</li>
+            <li><strong>Hyperstack Merging</strong> - Combined all timepoints into single 4D TIFF with preserved metadata</li>
+        </ol>
+
+        <h2>📂 Output Files</h2>
+        <table>
+            <tr><th>Directory</th><th>Contents</th></tr>
+            <tr><td>01_preprocessed/</td><td>Preprocessed and deconvolved images per timepoint</td></tr>
+            <tr><td>02_segmented/</td><td>Cellpose segmentation masks per timepoint</td></tr>
+            <tr><td>03_hyperstack/</td><td><strong>4D_hyperstack.tif</strong> - Final merged 4D image</td></tr>
+            <tr><td>metadata/</td><td>JSON metadata files per timepoint</td></tr>
+            <tr><td>logs/</td><td>Processing logs for debugging</td></tr>
+            <tr><td>reports/</td><td>This QC report</td></tr>
+        </table>
+
+        <div class="metric">
+            <div class="metric-label">✅ Pipeline completed successfully</div>
+        </div>
+
+        <p style="text-align: center; color: #7f8c8d; margin-top: 30px;">
+            <em>Report generated: {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}</em>
+        </p>
+    </div>
 </body>
 </html>
 '''
@@ -956,59 +777,68 @@ process GENERATE_QC_REPORT {
 // ============================================================================
 
 workflow {
-    // Input channel: all TIFF files in input directory
-    input_images = Channel
-        .fromPath("${params.input_dir}/*.{tif,tiff}")
-        .ifEmpty { error "No TIFF files found in ${params.input_dir}" }
+    // Parse input files with pattern: t####_Channel #.tif
+    // Extract timepoint number and filter by channel
 
-    // 1. Extract metadata from each image
-    EXTRACT_METADATA(input_images)
+    input_pattern = "${params.input_dir}/t*_Channel ${params.channel}.tif"
 
-    // 2. Split 4D images into timepoints
-    SPLIT_TIMEPOINTS(EXTRACT_METADATA.out.with_metadata)
-
-    // Flatten timepoints for parallel processing
-    timepoints_flat = SPLIT_TIMEPOINTS.out.timepoints
-        .transpose()
-        .map { series_name, timepoint_file, metadata ->
-            tuple(series_name, timepoint_file, metadata)
+    input_channel = Channel
+        .fromPath(input_pattern)
+        .ifEmpty { error "No files found matching pattern: ${input_pattern}" }
+        .map { file ->
+            // Extract timepoint number from filename
+            def matcher = (file.name =~ /t(\d+)_Channel/)
+            if (matcher.find()) {
+                def timepoint = matcher.group(1).toInteger()
+                return tuple(timepoint, file)
+            } else {
+                error "Could not parse timepoint from filename: ${file.name}"
+            }
         }
+        .tap { parsed_files }
 
-    // 3. Preprocess and deconvolve each timepoint
+    // Log parsed files
+    parsed_files.subscribe { timepoint, file ->
+        log.info "Found timepoint ${timepoint}: ${file.name}"
+    }
+
+    // 1. Extract metadata from each timepoint
+    EXTRACT_METADATA(input_channel)
+
+    // 2. Preprocess and deconvolve each timepoint
     PREPROCESS_DECONVOLVE(
-        timepoints_flat,
+        EXTRACT_METADATA.out.with_metadata,
         config.preprocessing
     )
 
-    // 4. Segment each timepoint
+    // 3. Segment each timepoint with Cellpose
     CELLPOSE_SEGMENT(
         PREPROCESS_DECONVOLVE.out.processed,
         config.segmentation
     )
 
-    // 5. Group timepoints by series and merge
-    segmented_grouped = CELLPOSE_SEGMENT.out.segmented
-        .groupTuple(by: 0)
-        .map { series_name, files, metadata ->
-            tuple(series_name, files, metadata[0])
-        }
+    // 4. Collect all segmented timepoints and merge into 4D hyperstack
+    all_segmented = CELLPOSE_SEGMENT.out.segmented
+        .map { timepoint, segmented_file, metadata -> segmented_file }
+        .collect()
 
-    MERGE_TIMEPOINTS(segmented_grouped)
+    all_metadata = CELLPOSE_SEGMENT.out.segmented
+        .map { timepoint, segmented_file, metadata -> metadata }
+        .collect()
 
-    // 6. Track cells across time
-    TRACKMATE_TRACK(
-        MERGE_TIMEPOINTS.out.merged_4d,
-        config.tracking
+    MERGE_TO_HYPERSTACK(
+        all_segmented,
+        all_metadata
     )
 
-    // 7. Generate QC report
+    // 5. Generate QC report
     all_logs = PREPROCESS_DECONVOLVE.out.log
         .mix(CELLPOSE_SEGMENT.out.log)
-        .mix(TRACKMATE_TRACK.out.log)
         .collect()
 
     GENERATE_QC_REPORT(
         all_logs,
+        MERGE_TO_HYPERSTACK.out.metadata,
         params.config_json
     )
 }
@@ -1022,15 +852,16 @@ workflow.onComplete {
     ============================================================================
     Pipeline completed!
     ============================================================================
-    Status      : ${workflow.success ? 'SUCCESS' : 'FAILED'}
-    Duration    : ${workflow.duration}
-    Output dir  : ${params.output_dir}
+    Status       : ${workflow.success ? 'SUCCESS ✓' : 'FAILED ✗'}
+    Duration     : ${workflow.duration}
+    Channel      : ${params.channel}
+    Output dir   : ${params.output_dir}
 
     Results:
       - Preprocessed images : ${params.output_dir}/01_preprocessed/
       - Segmented masks     : ${params.output_dir}/02_segmented/
-      - Tracking results    : ${params.output_dir}/03_tracked/
-      - QC reports          : ${params.output_dir}/reports/
+      - 4D Hyperstack       : ${params.output_dir}/03_hyperstack/4D_hyperstack.tif
+      - QC report           : ${params.output_dir}/reports/pipeline_report.html
       - Logs                : ${params.output_dir}/logs/
 
     Completed at: ${workflow.complete}
