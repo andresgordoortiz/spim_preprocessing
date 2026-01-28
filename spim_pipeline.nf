@@ -118,11 +118,11 @@ Started at: ${new Date()}
 """.stripIndent()
 
 // ============================================================================
-// PROCESS: Extract and Preserve Metadata
+// PROCESS: Extract and Preserve Metadata (only from first timepoint)
 // ============================================================================
 
 process EXTRACT_METADATA {
-    tag "t${String.format('%04d', timepoint)}"
+    tag "Extracting metadata"
 
     publishDir "${params.output_dir}/metadata",
         mode: 'copy',
@@ -132,11 +132,12 @@ process EXTRACT_METADATA {
     tuple val(timepoint), path(image_file)
 
     output:
-    tuple val(timepoint), path(image_file), path("t${String.format('%04d', timepoint)}_metadata.json"), emit: with_metadata
+    path "shared_metadata.json", emit: metadata
 
     container params.container
 
     script:
+    def filename = image_file.name
     """
     #!/usr/bin/env python3
     import json
@@ -144,10 +145,10 @@ process EXTRACT_METADATA {
     import numpy as np
     from pathlib import Path
 
-    print(f"Extracting metadata from: ${image_file}")
+    print(f"Extracting metadata from: ${filename}")
 
     # Read TIFF metadata
-    with tifffile.TiffFile('${image_file}') as tif:
+    with tifffile.TiffFile('${filename}') as tif:
         metadata = {}
 
         # ImageJ metadata
@@ -189,15 +190,11 @@ process EXTRACT_METADATA {
         if 'Software' in tags:
             metadata['software'] = tags['Software'].value
 
-        # Timepoint
-        metadata['timepoint'] = ${timepoint}
-
     # Save metadata
-    output_file = f"t{${timepoint}:04d}_metadata.json"
-    with open(output_file, 'w') as f:
+    with open('shared_metadata.json', 'w') as f:
         json.dump(metadata, f, indent=2)
 
-    print(f"Metadata saved to: {output_file}")
+    print(f"Metadata saved to: shared_metadata.json")
     print(json.dumps(metadata, indent=2))
     """
 }
@@ -220,23 +217,25 @@ process PREPROCESS_DECONVOLVE {
     container params.container
 
     input:
-    tuple val(timepoint), path(image_file), path(metadata_json)
+    tuple val(timepoint), path(image_file)
+    path metadata_json
     val preprocess_config
 
     output:
-    tuple val(timepoint), path("t${String.format('%04d', timepoint)}_processed.tif"), path(metadata_json), emit: processed
+    tuple val(timepoint), path("t${String.format('%04d', timepoint)}_processed.tif"), emit: processed
     path "t${String.format('%04d', timepoint)}_preprocess.log", emit: log
 
     script:
     def cfg = preprocess_config
     def t_formatted = String.format('%04d', timepoint)
+    def filename = image_file.name
     """
     #!/bin/bash
     set -euo pipefail
 
     echo "============================================"
     echo "Preprocessing timepoint: ${timepoint}"
-    echo "File: ${image_file}"
+    echo "File: ${filename}"
     echo "============================================"
 
     # Run preprocessing with all parameters from config
@@ -256,7 +255,7 @@ config = ${groovy.json.JsonOutput.toJson(cfg)}
 # Build command for preprocessing script
 cmd = [
     'python', 'spim_pipeline_fixed.py',
-    '--input_file', '${image_file}',
+    '--input_file', '${filename}',
     '--outdir', '.',
     '--psf_path', config['psf_path'],
     '--image_scaling', str(config['image_scaling']),
@@ -375,27 +374,29 @@ process CELLPOSE_SEGMENT {
     container params.container
 
     input:
-    tuple val(timepoint), path(processed_file), path(metadata_json)
+    tuple val(timepoint), path(processed_file)
+    path metadata_json
     val segment_config
 
     output:
-    tuple val(timepoint), path("t${String.format('%04d', timepoint)}_segmented.tif"), path(metadata_json), emit: segmented
+    tuple val(timepoint), path("t${String.format('%04d', timepoint)}_segmented.tif"), emit: segmented
     path "t${String.format('%04d', timepoint)}_segment.log", emit: log
 
     script:
     def cfg = segment_config
     def t_formatted = String.format('%04d', timepoint)
+    def filename = processed_file.name
     """
     #!/bin/bash
     set -euo pipefail
 
     echo "============================================"
     echo "Segmentation timepoint: ${timepoint}"
-    echo "File: ${processed_file}"
+    echo "File: ${filename}"
     echo "============================================"
 
     # Build Cellpose command
-    CELLPOSE_CMD="cellpose --image_path ${processed_file}"
+    CELLPOSE_CMD="cellpose --image_path ${filename}"
     CELLPOSE_CMD+=" --savedir ."
     CELLPOSE_CMD+=" --pretrained_model ${cfg.model}"
     CELLPOSE_CMD+=" --diameter ${cfg.diameter}"
@@ -480,7 +481,7 @@ process MERGE_TO_HYPERSTACK {
 
     input:
     path all_segmented_files
-    path all_metadata_files
+    path metadata_json
 
     output:
     path "4D_hyperstack.tif", emit: hyperstack
@@ -521,9 +522,8 @@ process MERGE_TO_HYPERSTACK {
 
     timepoint_data.sort(key=lambda x: x[0])
 
-    # Load first image to get reference metadata
-    first_metadata_file = sorted(Path('.').glob('t*_metadata.json'))[0]
-    with open(first_metadata_file, 'r') as f:
+    # Load reference metadata
+    with open('${metadata_json}', 'r') as f:
         ref_metadata = json.load(f)
 
     # Load all timepoints
@@ -802,33 +802,35 @@ workflow {
         log.info "Found timepoint ${timepoint}: ${file.name}"
     }
 
-    // 1. Extract metadata from each timepoint
-    EXTRACT_METADATA(input_channel)
+    // 1. Extract metadata from FIRST timepoint only (all have same metadata)
+    first_timepoint = input_channel.first()
+    EXTRACT_METADATA(first_timepoint)
+
+    // Share the same metadata with all timepoints
+    shared_metadata = EXTRACT_METADATA.out.metadata
 
     // 2. Preprocess and deconvolve each timepoint
     PREPROCESS_DECONVOLVE(
-        EXTRACT_METADATA.out.with_metadata,
+        input_channel,
+        shared_metadata,
         config.preprocessing
     )
 
     // 3. Segment each timepoint with Cellpose
     CELLPOSE_SEGMENT(
         PREPROCESS_DECONVOLVE.out.processed,
+        shared_metadata,
         config.segmentation
     )
 
     // 4. Collect all segmented timepoints and merge into 4D hyperstack
     all_segmented = CELLPOSE_SEGMENT.out.segmented
-        .map { timepoint, segmented_file, metadata -> segmented_file }
-        .collect()
-
-    all_metadata = CELLPOSE_SEGMENT.out.segmented
-        .map { timepoint, segmented_file, metadata -> metadata }
+        .map { timepoint, segmented_file -> segmented_file }
         .collect()
 
     MERGE_TO_HYPERSTACK(
         all_segmented,
-        all_metadata
+        shared_metadata
     )
 
     // 5. Generate QC report
