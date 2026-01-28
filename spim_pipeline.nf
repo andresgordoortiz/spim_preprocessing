@@ -124,6 +124,9 @@ Started at: ${new Date()}
 process EXTRACT_METADATA {
     tag "Extracting metadata"
 
+    maxRetries 1
+    errorStrategy 'terminate'
+
     publishDir "${params.output_dir}/metadata",
         mode: 'copy',
         pattern: "*.json"
@@ -140,62 +143,104 @@ process EXTRACT_METADATA {
     def filename = image_file.name
     """
     #!/usr/bin/env python3
+    import sys
     import json
-    import tifffile
-    import numpy as np
-    from pathlib import Path
+    import traceback
 
-    print(f"Extracting metadata from: ${filename}")
+    print("="*60, file=sys.stderr)
+    print("EXTRACT_METADATA DEBUG INFO", file=sys.stderr)
+    print("="*60, file=sys.stderr)
+    print(f"Python version: {sys.version}", file=sys.stderr)
 
-    # Read TIFF metadata
-    with tifffile.TiffFile('${filename}') as tif:
-        metadata = {}
+    # List files in current directory
+    import os
+    print(f"Working directory: {os.getcwd()}", file=sys.stderr)
+    print(f"\\nFiles in work directory:", file=sys.stderr)
+    for f in os.listdir('.'):
+        print(f"  - {f}", file=sys.stderr)
 
-        # ImageJ metadata
-        if tif.imagej_metadata:
-            metadata['imagej'] = {
-                'spacing': tif.imagej_metadata.get('spacing', 1.0),
-                'unit': tif.imagej_metadata.get('unit', 'micron'),
-                'axes': tif.imagej_metadata.get('axes', 'ZYX'),
-                'slices': tif.imagej_metadata.get('slices', tif.series[0].shape[0]),
+    try:
+        import tifffile
+        import numpy as np
+        from pathlib import Path
+
+        print(f"\\nTifffile version: {tifffile.__version__}", file=sys.stderr)
+        print(f"Numpy version: {np.__version__}", file=sys.stderr)
+
+        filename = '${filename}'
+        print(f"\\nAttempting to open: {filename}", file=sys.stderr)
+
+        if not os.path.exists(filename):
+            print(f"ERROR: File does not exist: {filename}", file=sys.stderr)
+            sys.exit(1)
+
+        file_size = os.path.getsize(filename)
+        print(f"File size: {file_size:,} bytes", file=sys.stderr)
+
+        # Read TIFF metadata
+        print(f"Opening TIFF file...", file=sys.stderr)
+        with tifffile.TiffFile(filename) as tif:
+            metadata = {}
+
+            # ImageJ metadata
+            if tif.imagej_metadata:
+                metadata['imagej'] = {
+                    'spacing': tif.imagej_metadata.get('spacing', 1.0),
+                    'unit': tif.imagej_metadata.get('unit', 'micron'),
+                    'axes': tif.imagej_metadata.get('axes', 'ZYX'),
+                    'slices': tif.imagej_metadata.get('slices', tif.series[0].shape[0]),
+                }
+
+            # TIFF tags from first page
+            first_page = tif.pages[0]
+            tags = first_page.tags
+
+            # Extract resolution
+            if 'XResolution' in tags:
+                x_num, x_denom = tags['XResolution'].value
+                metadata['x_resolution_um'] = x_denom / x_num if x_num != 0 else 1.0
+            else:
+                metadata['x_resolution_um'] = 1.0
+
+            if 'YResolution' in tags:
+                y_num, y_denom = tags['YResolution'].value
+                metadata['y_resolution_um'] = y_denom / y_num if y_num != 0 else 1.0
+            else:
+                metadata['y_resolution_um'] = 1.0
+
+            # Image dimensions
+            metadata['shape'] = {
+                'axes': 'ZYX',
+                'dimensions': list(tif.series[0].shape)
             }
 
-        # TIFF tags from first page
-        first_page = tif.pages[0]
-        tags = first_page.tags
+            # Data type
+            metadata['dtype'] = str(tif.series[0].dtype)
 
-        # Extract resolution
-        if 'XResolution' in tags:
-            x_num, x_denom = tags['XResolution'].value
-            metadata['x_resolution_um'] = x_denom / x_num if x_num != 0 else 1.0
-        else:
-            metadata['x_resolution_um'] = 1.0
+            # Software info
+            if 'Software' in tags:
+                metadata['software'] = tags['Software'].value
 
-        if 'YResolution' in tags:
-            y_num, y_denom = tags['YResolution'].value
-            metadata['y_resolution_um'] = y_denom / y_num if y_num != 0 else 1.0
-        else:
-            metadata['y_resolution_um'] = 1.0
+        # Save metadata
+        print(f"\\nWriting metadata to shared_metadata.json", file=sys.stderr)
+        with open('shared_metadata.json', 'w') as f:
+            json.dump(metadata, f, indent=2)
 
-        # Image dimensions
-        metadata['shape'] = {
-            'axes': 'ZYX',
-            'dimensions': list(tif.series[0].shape)
-        }
+        print(f"\\nSUCCESS: Metadata extracted and saved", file=sys.stderr)
+        print("="*60, file=sys.stderr)
 
-        # Data type
-        metadata['dtype'] = str(tif.series[0].dtype)
+        # Also print to stdout for nextflow logs
+        print(f"Metadata saved to: shared_metadata.json")
+        print(json.dumps(metadata, indent=2))
 
-        # Software info
-        if 'Software' in tags:
-            metadata['software'] = tags['Software'].value
-
-    # Save metadata
-    with open('shared_metadata.json', 'w') as f:
-        json.dump(metadata, f, indent=2)
-
-    print(f"Metadata saved to: shared_metadata.json")
-    print(json.dumps(metadata, indent=2))
+    except Exception as e:
+        print(f"\\nERROR: Exception occurred", file=sys.stderr)
+        print(f"Exception type: {type(e).__name__}", file=sys.stderr)
+        print(f"Exception message: {str(e)}", file=sys.stderr)
+        print(f"\\nFull traceback:", file=sys.stderr)
+        traceback.print_exc(file=sys.stderr)
+        print("="*60, file=sys.stderr)
+        sys.exit(1)
     """
 }
 
@@ -205,6 +250,9 @@ process EXTRACT_METADATA {
 
 process PREPROCESS_DECONVOLVE {
     tag "t${String.format('%04d', timepoint)}"
+
+    maxRetries 1
+    errorStrategy 'terminate'
 
     publishDir "${params.output_dir}/01_preprocessed",
         mode: 'copy',
@@ -363,6 +411,9 @@ RESTORE_META
 process CELLPOSE_SEGMENT {
     tag "t${String.format('%04d', timepoint)}"
 
+    maxRetries 1
+    errorStrategy 'terminate'
+
     publishDir "${params.output_dir}/02_segmented",
         mode: 'copy',
         pattern: "*_segmented.tif"
@@ -475,6 +526,9 @@ PRESERVE_MASK_META
 
 process MERGE_TO_HYPERSTACK {
     tag "Creating 4D hyperstack"
+
+    maxRetries 1
+    errorStrategy 'terminate'
 
     publishDir "${params.output_dir}/03_hyperstack",
         mode: 'copy'
@@ -617,6 +671,9 @@ process MERGE_TO_HYPERSTACK {
 // ============================================================================
 
 process GENERATE_QC_REPORT {
+    maxRetries 1
+    errorStrategy 'terminate'
+
     publishDir "${params.output_dir}/reports",
         mode: 'copy'
 
