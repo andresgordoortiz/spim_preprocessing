@@ -68,7 +68,7 @@ env | grep -E 'SLURM|NXF'
 INPUT_DIR="./data"
 OUTPUT_DIR="./spim_pipeline_output"
 CONFIG_JSON="./config_medaka.json"
-CHANNEL=1  # Name of the channel to process
+CHANNEL=2  # Name of the channel to process
 
 # Nextflow parameters
 PROFILE="standard"  # Options: standard, highres, local
