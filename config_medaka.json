@@ -3,7 +3,7 @@
     "version": "1.0.0",
     "description": "SPIM Pipeline Configuration for Medaka Imaging",
     "author": "Andres Gordo / Guilherme Ventura",
-    "date_created": "2026-01-27",
+    "date_created": "2026-01-28",
     "experiment": "Medaka - low resolution"
   },
 
@@ -58,10 +58,9 @@
     "description": "Cellpose segmentation optimized for medaka cardiomyocytes",
 
     "model": "/groups/pinheiro/user/guilherme.ventura/for_analysis/SPIM/things_from_Thomas/cellpose/models/cpsam_Gui_tracking_20250801",
-    "comment_model": "Custom Cellpose model trained on medaka heart cells",
+    "comment_model": "Custom Cellpose model trained on medaka cells",
 
     "diameter": 30,
-    "comment_diameter": "30 pixels ≈ expected cardiomyocyte size. CRITICAL: Do not use 0 for 3D!",
 
     "flow_threshold": 0.8,
     "comment_flow": "0.8 = balanced sensitivity. Increase to 1.0-1.5 to reduce over-segmentation",
@@ -82,68 +81,9 @@
     "comment_image_scaling": "Must match preprocessing scaling for correct voxel sizes"
   },
 
-  "tracking": {
-    "description": "TrackMate parameters for cardiomyocyte tracking across development",
-
-    "detector": {
-      "simplify_contours": true,
-      "comment": "Simplify cell boundaries for faster tracking without loss of accuracy"
-    },
-
-    "linking": {
-      "linking_max_distance": 15.0,
-      "comment_linking": "15 pixels ≈ maximum expected cell movement between frames. Adjust based on temporal resolution."
-    },
-
-    "gap_closing": {
-      "allow_gap_closing": true,
-      "gap_closing_max_distance": 15.0,
-      "max_frame_gap": 2,
-      "comment": "Allow missing up to 2 frames. Useful when cells temporarily leave imaging plane."
-    },
-
-    "splitting_merging": {
-      "allow_track_splitting": false,
-      "allow_track_merging": false,
-      "comment": "Disable for mature cardiomyocytes (no division). Enable if tracking proliferating cells."
-    }
-  },
-
   "system": {
-    "description": "System configuration for SLURM cluster",
-
+    "description": "Container image only - resource allocation is in nextflow.config",
     "container_image": "docker://ghcr.io/andresgordoortiz/spim_preprocessing:sha-8720eea",
-    "comment_container": "Pre-built container with all dependencies",
-
-    "executor": {
-      "name": "slurm",
-      "queue": "g",
-      "comment": "GPU partition on SLURM cluster"
-    },
-
-    "resources": {
-      "preprocessing": {
-        "cpus": 8,
-        "memory": "64 GB",
-        "gpu": 1,
-        "time": "2h",
-        "comment": "Standard resources for ~500x500x100 images"
-      },
-      "segmentation": {
-        "cpus": 4,
-        "memory": "64 GB",
-        "gpu": 1,
-        "time": "2h",
-        "exclude_nodes": "clip-g1-[0-6]",
-        "comment": "Exclude older P100 GPUs, use V100/RTX/A100"
-      },
-      "tracking": {
-        "cpus": 4,
-        "memory": "32 GB",
-        "gpu": 0,
-        "time": "4h",
-        "comment": "TrackMate is CPU-only, may need more time for long timeseries"
-      }
-    }
+    "comment": "Resource allocation (CPU, memory, time, GPU) is defined in nextflow.config, not here"
   }
 }

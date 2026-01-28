@@ -153,6 +153,7 @@ nextflow run "$PIPELINE_SCRIPT" \
     --config_json "$CONFIG_JSON" \
     --channel "$CHANNEL" \
     -profile "$PROFILE" \
+    -c "./nextflow.config" \
     $RESUME \
     -with-report "$OUTPUT_DIR/reports/nextflow_report_${TIMESTAMP}.html" \
     -with-timeline "$OUTPUT_DIR/reports/nextflow_timeline_${TIMESTAMP}.html" \
