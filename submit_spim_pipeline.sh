@@ -72,7 +72,7 @@ CHANNEL=2  # Name of the channel to process
 
 # Nextflow parameters
 PROFILE="standard"  # Options: standard, highres, local
-RESUME="-resume"    # Use -resume to continue from last step, or leave empty
+RESUME=""    # Use -resume to continue from last step, or leave empty
 
 # Pipeline location
 PIPELINE_SCRIPT="./spim_pipeline.nf"
