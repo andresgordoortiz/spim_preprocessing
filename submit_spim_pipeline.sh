@@ -65,9 +65,10 @@ env | grep -E 'SLURM|NXF'
 # ============================================================================
 
 # Input/Output directories (MODIFY THESE)
-INPUT_DIR="/groups/pinheiro/user/andres.gordo/projects/spim_preprocessing/data/input_low-res"
-OUTPUT_DIR="/groups/pinheiro/user/andres.gordo/projects/spim_preprocessing/results/nextflow_pipeline"
+INPUT_DIR="./data"
+OUTPUT_DIR="./spim_pipeline_output"
 CONFIG_JSON="./config_medaka.json"
+CHANNEL=1  # Name of the channel to process
 
 # Nextflow parameters
 PROFILE="standard"  # Options: standard, highres, local
@@ -153,6 +154,7 @@ nextflow run "$PIPELINE_SCRIPT" \
     --input_dir "$INPUT_DIR" \
     --output_dir "$OUTPUT_DIR" \
     --config_json "$CONFIG_JSON" \
+    --channel "$CHANNEL" \
     -profile "$PROFILE" \
     $RESUME \
     -with-report "$OUTPUT_DIR/reports/nextflow_report_${TIMESTAMP}.html" \
