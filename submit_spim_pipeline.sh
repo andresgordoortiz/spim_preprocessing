@@ -116,9 +116,6 @@ export PATH="$HOME/.nextflow:$PATH"
 export NXF_TEMP="$OUTPUT_DIR/.nextflow_temp"
 mkdir -p "$NXF_TEMP"
 
-# Optional: Set Singularity cache directory
-export SINGULARITY_CACHEDIR="$HOME/.singularity/cache"
-mkdir -p "$SINGULARITY_CACHEDIR"
 
 # ============================================================================
 # LOGGING
